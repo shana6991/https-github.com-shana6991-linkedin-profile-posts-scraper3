@@ -1,7 +1,7 @@
 const { Actor } = require('apify');
-const puppeteer = require('puppeteer-extra');
+const puppeteer = require('puppeteer-extra'); // Corrected spelling
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-pupeteer.use(StealthPlugin());
+puppeteer.use(StealthPlugin()); // Corrected spelling
 
 async function extractPostContent(page) {
     // ... (same as before)
