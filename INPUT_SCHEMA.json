@@ -8,7 +8,7 @@
       "title": "URL(s) du profil LinkedIn",
       "type": ["string", "array"],
       "description": "URL LinkedIn du profil à scraper, ou liste d'URLs.",
-      "editor": "stringList"
+      "editor": "json"
     },
     "li_at": {
       "title": "Cookie li_at LinkedIn",
