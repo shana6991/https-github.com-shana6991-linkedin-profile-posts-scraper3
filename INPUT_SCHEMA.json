@@ -8,10 +8,7 @@
       "title": "Liste des URLs de profils LinkedIn",
       "type": "array",
       "description": "Exemple : [\"https://www.linkedin.com/in/xxx/\"]",
-      "editor": "json",
-      "items": {
-        "type": "string"
-      }
+      "editor": "json"
     },
     "li_at": {
       "title": "Cookie li_at LinkedIn",
