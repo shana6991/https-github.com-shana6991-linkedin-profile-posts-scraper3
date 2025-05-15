@@ -1,4 +1,5 @@
 {
+  "schemaVersion": 1,
   "title": "LinkedIn Profile Posts Scraper Input",
   "type": "object",
   "description": "Paramètres pour scraper un ou plusieurs profils LinkedIn.",
