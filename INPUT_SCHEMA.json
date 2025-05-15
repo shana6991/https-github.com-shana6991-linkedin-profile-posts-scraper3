@@ -13,7 +13,8 @@
     "li_at": {
       "title": "Cookie li_at LinkedIn",
       "type": "string",
-      "description": "Votre cookie de session LinkedIn (li_at)."
+      "description": "Votre cookie de session LinkedIn (li_at).",
+      "editor": "textfield"
     },
     "maxPosts": {
       "title": "Nombre maximum de posts à scraper par profil",
