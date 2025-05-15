@@ -1,0 +1,25 @@
+{
+  "title": "LinkedIn Profile Posts Scraper Input",
+  "type": "object",
+  "description": "Paramètres pour scraper un ou plusieurs profils LinkedIn.",
+  "properties": {
+    "profileUrls": {
+      "title": "URL(s) du profil LinkedIn",
+      "type": ["string", "array"],
+      "description": "URL LinkedIn du profil à scraper, ou liste d'URLs.",
+      "editor": "stringList"
+    },
+    "li_at": {
+      "title": "Cookie li_at LinkedIn",
+      "type": "string",
+      "description": "Votre cookie de session LinkedIn (li_at)."
+    },
+    "maxPosts": {
+      "title": "Nombre maximum de posts à scraper par profil",
+      "type": "integer",
+      "description": "Limite le nombre de posts extraits par profil.",
+      "default": 20
+    }
+  },
+  "required": ["profileUrls", "li_at"]
+}
