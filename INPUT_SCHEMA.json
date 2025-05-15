@@ -5,10 +5,13 @@
   "description": "Paramètres pour scraper un ou plusieurs profils LinkedIn.",
   "properties": {
     "profileUrls": {
-      "title": "URL(s) du profil LinkedIn",
-      "type": ["string", "array"],
-      "description": "URL LinkedIn du profil à scraper, ou liste d'URLs.",
-      "editor": "json"
+      "title": "Liste des URLs de profils LinkedIn",
+      "type": "array",
+      "description": "Exemple : [\"https://www.linkedin.com/in/xxx/\"]",
+      "editor": "json",
+      "items": {
+        "type": "string"
+      }
     },
     "li_at": {
       "title": "Cookie li_at LinkedIn",
