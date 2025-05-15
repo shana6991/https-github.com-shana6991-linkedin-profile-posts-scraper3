@@ -1,19 +1,22 @@
 FROM apify/actor-node-puppeteer-chrome:20
 
-# The base image typically sets WORKDIR /actor and USER myuser.
-# However, if /actor was created by root in the base image's layers,
-# myuser might not have write permissions. Let's ensure it.
+# Explicitly set WORKDIR first, although base image should do this.
+WORKDIR /actor
 
+# Switch to root to ensure directory exists and change ownership.
 USER root
-RUN chown -R myuser:myuser /actor
-USER myuser
 
-# Now, myuser owns /actor and we are running as myuser in /actor.
+# Ensure the /actor directory exists, then change its ownership.
+# The -p flag creates parent directories if needed and doesn't error if /actor already exists.
+RUN mkdir -p /actor && chown -R myuser:myuser /actor
+
+# Switch back to myuser. Now myuser owns /actor and is the current user in /actor.
+USER myuser
 
 # Copy package.json and package-lock.json (if it exists) first for caching.
 COPY package*.json ./
 
-# Install actor dependencies. This should now work.
+# Install actor dependencies.
 RUN npm install --omit=dev
 
 # Copy the rest of your actor's source code.
