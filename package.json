@@ -1,0 +1,14 @@
+{
+  "name": "linkedin-profile-posts-scraper",
+  "version": "1.0.0",
+  "description": "Scrape LinkedIn profile posts (texte + médias) via Apify & Puppeteer.",
+  "main": "main.js",
+  "scripts": {
+    "start": "node main.js"
+  },
+  "dependencies": {
+    "apify": "^3.0.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.1"
+  }
+}
