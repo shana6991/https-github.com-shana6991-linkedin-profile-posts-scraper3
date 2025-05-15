@@ -8,6 +8,7 @@
   },
   "dependencies": {
     "apify": "^3.0.0",
+    "puppeteer": "*",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.1"
   }
