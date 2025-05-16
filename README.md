@@ -1,30 +1,97 @@
 # LinkedIn Profile Posts Scraper
 
-Scrape le texte complet et les médias (images, vidéos) des posts d’un ou plusieurs profils LinkedIn, via Apify et Puppeteer.
+A Node.js scraper that extracts posts from LinkedIn profiles using Puppeteer with stealth mode.
 
-## Fonctionnalités
-- Scraping d’un ou plusieurs profils LinkedIn (texte + médias)
-- Limitation du nombre de posts par profil (`maxPosts`)
-- Compatible Apify Actor (cloud ou local)
-- Contournement des blocages LinkedIn (stealth, proxy, cookie)
+## Features
 
-## Utilisation
+- Scrapes posts from multiple LinkedIn profiles
+- Handles authentication securely
+- Uses stealth mode to avoid detection
+- Configurable maximum posts limit
+- Extracts post text, timestamps, and like counts
+- Supports proxy usage (optional)
 
-### Input (`INPUT_SCHEMA.json`)
-- `profileUrls` : URL unique ou liste d’URLs de profils LinkedIn à scraper
-- `li_at` : Cookie de session LinkedIn (obligatoire)
-- `maxPosts` : Nombre maximum de posts à scraper par profil (défaut : 20)
+## Installation
 
-### Lancer le scraper
-
+1. Clone this repository
+2. Install dependencies:
 ```bash
 npm install
-apify run
 ```
 
-## Sortie
-- Un dataset Apify (JSON) avec pour chaque post : texte, images, vidéos, URL, date
+## Configuration
 
----
+Create a `.env` file with your LinkedIn credentials (optional):
+```
+LINKEDIN_USERNAME=your_email@example.com
+LINKEDIN_PASSWORD=your_password
+```
 
-**Attention :** Utilisation à des fins personnelles ou de recherche. Respectez les CGU LinkedIn.
+## Usage
+
+1. Run the scraper:
+```bash
+npm start
+```
+
+2. Or provide input directly:
+```bash
+node main.js
+```
+
+## Input Schema
+
+The scraper accepts the following input parameters:
+
+- `username` (required): LinkedIn account username/email
+- `password` (required): LinkedIn account password
+- `profileUrls` (required): Array of LinkedIn profile URLs to scrape
+- `maxPosts` (optional): Maximum number of posts to scrape (0 for unlimited)
+- `useProxy` (optional): Whether to use a proxy for scraping (default: false)
+
+Example input:
+```json
+{
+    "username": "your_email@example.com",
+    "password": "your_password",
+    "profileUrls": [
+        "https://www.linkedin.com/in/username1",
+        "https://www.linkedin.com/in/username2"
+    ],
+    "maxPosts": 50,
+    "useProxy": false
+}
+```
+
+## Output Format
+
+The scraper outputs an array of posts with the following structure:
+
+```json
+{
+    "text": "Post content",
+    "timestamp": "2024-03-15T10:30:00.000Z",
+    "likes": 42,
+    "profileUrl": "https://www.linkedin.com/in/username",
+    "scrapedAt": "2024-03-15T12:00:00.000Z"
+}
+```
+
+## Error Handling
+
+- The scraper takes screenshots on errors for debugging
+- Failed profile scrapes won't stop the entire process
+- Network errors are handled gracefully
+
+## Dependencies
+
+- apify: ^3.1.15
+- moment: ^2.29.4
+- proxy-chain: ^2.3.0
+- puppeteer: ^21.0.0
+- puppeteer-extra: ^3.3.6
+- puppeteer-extra-plugin-stealth: ^2.11.2
+
+## License
+
+ISC
