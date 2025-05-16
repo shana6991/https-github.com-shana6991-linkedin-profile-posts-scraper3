@@ -36,8 +36,8 @@
         "useProxy": {
             "title": "Use Proxy",
             "type": "boolean",
-            "description": "Whether to use a proxy for scraping",
-            "default": false
+            "description": "STRONGLY RECOMMENDED: Use Apify proxies to avoid LinkedIn's authwall. Make sure Apify proxy is enabled in your account settings.",
+            "default": true
         },
         "includeComments": {
             "title": "Include Comments",
