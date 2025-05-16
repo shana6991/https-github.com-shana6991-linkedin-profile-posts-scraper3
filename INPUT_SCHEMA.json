@@ -2,26 +2,72 @@
   "schemaVersion": 1,
   "title": "LinkedIn Profile Posts Scraper Input",
   "type": "object",
-  "description": "Paramètres pour scraper un ou plusieurs profils LinkedIn.",
+  "description": "Paramètres pour scraper les posts d'un profil LinkedIn",
   "properties": {
-    "profileUrls": {
-      "title": "Liste des URLs de profils LinkedIn",
-      "type": "array",
-      "description": "Exemple : [\"https://www.linkedin.com/in/xxx/\"]",
-      "editor": "json"
-    },
-    "li_at": {
-      "title": "Cookie li_at LinkedIn",
+    "profileUrl": {
+      "title": "URL du profil LinkedIn",
       "type": "string",
-      "description": "Votre cookie de session LinkedIn (li_at).",
+      "description": "URL du profil LinkedIn à scraper (ex: https://www.linkedin.com/in/xxx/)",
       "editor": "textfield"
     },
+    "linkedinLogin": {
+      "title": "Email/Username LinkedIn",
+      "type": "string",
+      "description": "Votre email ou username LinkedIn",
+      "editor": "textfield"
+    },
+    "linkedinPassword": {
+      "title": "Mot de passe LinkedIn",
+      "type": "string",
+      "description": "Votre mot de passe LinkedIn",
+      "editor": "textfield",
+      "isSecret": true
+    },
     "maxPosts": {
-      "title": "Nombre maximum de posts à scraper par profil",
+      "title": "Nombre maximum de posts",
       "type": "integer",
-      "description": "Limite le nombre de posts extraits par profil.",
-      "default": 20
+      "description": "Nombre maximum de posts à extraire (optionnel)",
+      "default": null
+    },
+    "includeComments": {
+      "title": "Inclure les commentaires",
+      "type": "boolean",
+      "description": "Extraire aussi les commentaires des posts",
+      "default": false
+    },
+    "maxCommentsPerPost": {
+      "title": "Nombre max de commentaires par post",
+      "type": "integer",
+      "description": "Limite le nombre de commentaires extraits par post",
+      "default": 10
+    },
+    "includeMedia": {
+      "title": "Inclure les médias",
+      "type": "boolean",
+      "description": "Extraire les images et vidéos des posts",
+      "default": false
+    },
+    "dateFrom": {
+      "title": "Date de début",
+      "type": "string",
+      "description": "Ne récupérer que les posts après cette date (format YYYY-MM-DD)",
+      "editor": "textfield",
+      "nullable": true
+    },
+    "dateTo": {
+      "title": "Date de fin",
+      "type": "string",
+      "description": "Ne récupérer que les posts avant cette date (format YYYY-MM-DD)",
+      "editor": "textfield",
+      "nullable": true
+    },
+    "proxyConfiguration": {
+      "title": "Configuration du proxy",
+      "type": "object",
+      "description": "Configuration du proxy Apify (optionnel)",
+      "default": { "useApifyProxy": false },
+      "editor": "json"
     }
   },
-  "required": ["profileUrls", "li_at"]
+  "required": ["profileUrl", "linkedinLogin", "linkedinPassword"]
 }
