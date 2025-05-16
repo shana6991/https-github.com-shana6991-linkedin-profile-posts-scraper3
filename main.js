@@ -93,7 +93,7 @@ async function checkForAuthwall(page, contextMessage) {
     if (currentUrl.includes('/authwall')) {
         customLog('error', `[${contextMessage}] LinkedIn Authwall detected at URL: ${currentUrl}.`);
         await Actor.setValue('AUTHWALL_DETECTED_URL', currentUrl);
-        await Actor.setValue(\`AUTHWALL_SCREENSHOT_${contextMessage.replace(/\\s+/g, '_')}\`, await page.screenshot({fullPage: true, type: 'jpeg'}), { contentType: 'image/jpeg' });
+        await Actor.setValue(`AUTHWALL_SCREENSHOT_${contextMessage.replace(/\s+/g, '_')}`, await page.screenshot({fullPage: true, type: 'jpeg'}), { contentType: 'image/jpeg' });
         // In Crawlee, throwing an error in requestHandler will mark the request as failed.
         throw new Error(`Authwall detected: ${contextMessage} at ${currentUrl}`);
     }
@@ -106,7 +106,7 @@ async function autoScroll(page, stopConditionCallback) {
     await page.evaluate(async (stopCbStr) => {
         // Reconstruct the callback inside browser context if it's a simple one
         // For complex callbacks, this approach might be limited.
-        // const stopCondition = new Function(\`return (${stopCbStr})\`)(); // Be very careful with this if cb is complex
+        // const stopCondition = new Function(`return (${stopCbStr})`)(); // Be very careful with this if cb is complex
 
         await new Promise((resolve) => {
             let totalHeight = 0;
@@ -379,8 +379,8 @@ Actor.main(async () => {
             const timestamp = new Date().toISOString().replace(/:/g, '-');
             try {
                 if (page) { // Page might not exist if error happened before page creation
-                     await Actor.setValue(\`FAILED_REQUEST_SCREENSHOT_${safeUrl}_${timestamp}.jpg\`, await page.screenshot({ fullPage: true, type: 'jpeg', quality: 70 }), { contentType: 'image/jpeg' });
-                     await Actor.setValue(\`FAILED_REQUEST_HTML_${safeUrl}_${timestamp}.html\`, await page.content(), { contentType: 'text/html' });
+                     await Actor.setValue(`FAILED_REQUEST_SCREENSHOT_${safeUrl}_${timestamp}.jpg`, await page.screenshot({ fullPage: true, type: 'jpeg', quality: 70 }), { contentType: 'image/jpeg' });
+                     await Actor.setValue(`FAILED_REQUEST_HTML_${safeUrl}_${timestamp}.html`, await page.content(), { contentType: 'text/html' });
                 }
             } catch (screenShotError) {
                  log.error(`Failed to save screenshot or HTML for ${request.url}: ${screenShotError.message}`);
