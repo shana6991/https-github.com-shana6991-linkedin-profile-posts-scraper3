@@ -16,7 +16,7 @@ async function scrapeLinkedIn() {
     console.log('scrapeLinkedIn function started.'); 
     let browser = null;
     let page = null;
-    let proxyConfiguration = null;
+    let proxyConfiguration = null; // Keep track of the active proxy configuration
 
     try {
         const input = await Actor.getInput();
@@ -35,7 +35,6 @@ async function scrapeLinkedIn() {
             return; 
         }
 
-        // Setup launcher options
         const launchOptions = {
             headless: "new",
             args: [
@@ -51,53 +50,72 @@ async function scrapeLinkedIn() {
             ]
         };
 
-        // Setup proxy if enabled
         if (useProxy) {
-            console.log('Proxy usage enabled. Setting up Apify Proxy...');
-            
-            try {
-                // Create proxy configuration with fallback options
-                const proxyOptions = {
-                    // Try multiple proxy groups in order of preference
-                    groups: ['RESIDENTIAL', 'DATACENTER'],
-                    countryCode: 'US',        // Using US IPs for LinkedIn
-                };
+            console.log('Proxy usage enabled. Attempting to set up Apify Proxy...');
+            let proxyUrl = null;
 
-                proxyConfiguration = await Actor.createProxyConfiguration(proxyOptions);
-                
+            // Attempt 1: Try with RESIDENTIAL group only
+            try {
+                console.log('Attempting to configure proxy with RESIDENTIAL group...');
+                proxyConfiguration = await Actor.createProxyConfiguration({
+                    groups: ['RESIDENTIAL'],
+                    countryCode: 'US'
+                });
                 if (proxyConfiguration) {
-                    const proxyUrl = await proxyConfiguration.newUrl();
-                    
-                    // Hide credentials in logs
-                    const sanitizedProxyUrl = proxyUrl.replace(/\/\/([^:]+):[^@]+@/, '//groups-RESIDENTIAL,country-US:*********@');
-                    console.log('Apify Proxy obtained successfully:', sanitizedProxyUrl);
-                    
-                    // Set the proxy to puppeteer launch options
-                    launchOptions.args.push(`--proxy-server=${proxyUrl}`);
-                    console.log('Browser configured to use Apify Proxy.');
-                } else {
-                    console.warn('Failed to obtain Apify Proxy. Will try alternative methods.');
-                    
-                    // Try to get proxy from environment
-                    const envProxyUrl = process.env.APIFY_PROXY_URL;
-                    if (envProxyUrl) {
-                        console.log('Using Apify Proxy from environment variable.');
-                        launchOptions.args.push(`--proxy-server=${envProxyUrl}`);
-                    } else {
-                        console.warn('No proxy available from environment. Continuing without proxy.');
+                    proxyUrl = await proxyConfiguration.newUrl();
+                    console.log('Successfully configured proxy with RESIDENTIAL group.');
+                }
+            } catch (error) {
+                console.warn(`Failed to configure RESIDENTIAL proxy: ${error.message}.`);
+                // Log the specific error if it's the known issue
+                if (error.message.includes('cannot be used in combination')) {
+                    console.warn('This account may not allow mixing RESIDENTIAL with other groups or has specific restrictions.');
+                }
+                proxyConfiguration = null; // Reset proxyConfiguration if it failed
+            }
+
+            // Attempt 2: If RESIDENTIAL failed, try with DATACENTER group only
+            if (!proxyUrl) {
+                console.log('Attempting to configure proxy with DATACENTER group...');
+                try {
+                    proxyConfiguration = await Actor.createProxyConfiguration({
+                        groups: ['DATACENTER'],
+                        countryCode: 'US'
+                    });
+                    if (proxyConfiguration) {
+                        proxyUrl = await proxyConfiguration.newUrl();
+                        console.log('Successfully configured proxy with DATACENTER group.');
                     }
+                } catch (error) {
+                    console.warn(`Failed to configure DATACENTER proxy: ${error.message}.`);
+                    proxyConfiguration = null; // Reset proxyConfiguration
                 }
-            } catch (proxyError) {
-                console.error('Error setting up proxy:', proxyError.message);
-                console.warn('Will try alternative proxy methods...');
-                
-                // Try to use a simple proxy URL if available in the input
-                if (input.proxyUrl) {
+            }
+            
+            // Attempt 3: Fallback to environment variable or custom input URL if Apify Proxy setup failed
+            if (!proxyUrl) {
+                console.warn('Apify Proxy setup via createProxyConfiguration failed.');
+                const envProxyUrl = process.env.APIFY_PROXY_URL;
+                if (envProxyUrl) {
+                    console.log('Using Apify Proxy from environment variable.');
+                    proxyUrl = envProxyUrl;
+                } else if (input.proxyUrl) {
                     console.log('Using custom proxy URL from input.');
-                    launchOptions.args.push(`--proxy-server=${input.proxyUrl}`);
+                    proxyUrl = input.proxyUrl;
                 } else {
-                    console.warn('No alternative proxy available. Continuing without proxy.');
+                    console.warn('No alternative proxy found. Proceeding without proxy.');
                 }
+            }
+
+            if (proxyUrl) {
+                const sanitizedProxyUrl = proxyUrl.includes('@') 
+                    ? proxyUrl.replace(/\/\/([^:]+):[^@]+@/, '//***:***@') 
+                    : proxyUrl;
+                console.log('Using proxy URL:', sanitizedProxyUrl);
+                launchOptions.args.push(`--proxy-server=${proxyUrl}`);
+                console.log('Browser configured to use the determined proxy.');
+            } else {
+                 console.log('Continuing without proxy as no proxy could be configured.');
             }
         }
 
@@ -115,11 +133,9 @@ async function scrapeLinkedIn() {
         });
         console.log('Viewport set.');
 
-        // Set a realistic user agent for a premium browser profile
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
         console.log('User agent set to mimic Chrome on Windows.');
 
-        // Additional headers to be more browser-like
         await page.setExtraHTTPHeaders({
             'Accept-Language': 'en-US,en;q=0.9',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
@@ -144,7 +160,7 @@ async function scrapeLinkedIn() {
         });
         console.log('Request interception set up.');
 
-        page.setDefaultNavigationTimeout(120000); // Increased timeout for slow proxy
+        page.setDefaultNavigationTimeout(120000);
         page.setDefaultTimeout(90000);
         console.log('Default timeouts set.');
 
@@ -159,7 +175,6 @@ async function scrapeLinkedIn() {
                     timeout: 90000
                 });
                 
-                // Check if we're already on a different page (maybe already logged in)
                 const currentUrl = page.url();
                 if (!currentUrl.includes('linkedin.com/login')) {
                     console.log(`Redirected to ${currentUrl} instead of login page. Might already be logged in.`);
@@ -171,18 +186,21 @@ async function scrapeLinkedIn() {
             } catch (error) {
                 console.warn(`Login page navigation attempt ${4 - retries}/3 failed: ${error.message}`);
                 
-                // If we get a proxy connection error, try to get a new proxy URL
-                if (error.message.includes('ERR_PROXY_CONNECTION_FAILED') && proxyConfiguration) {
-                    console.log('Detected proxy connection error. Trying with a new proxy...');
+                if (error.message.includes('ERR_PROXY_CONNECTION_FAILED') && proxyConfiguration && launchOptions.args.some(arg => arg.startsWith('--proxy-server'))) {
+                    console.log('Detected proxy connection error during login. Trying with a new proxy from the same configuration...');
                     try {
                         const newProxyUrl = await proxyConfiguration.newUrl();
-                        await page.authenticate({
-                            username: newProxyUrl.split('@')[0].split('//')[1].split(':')[0],
-                            password: newProxyUrl.split('@')[0].split(':')[1]
-                        });
-                        console.log('Applied new proxy credentials.');
-                    } catch (proxyError) {
-                        console.warn(`Failed to apply new proxy: ${proxyError.message}`);
+                        const oldProxyArgIndex = launchOptions.args.findIndex(arg => arg.startsWith('--proxy-server'));
+                        launchOptions.args[oldProxyArgIndex] = `--proxy-server=${newProxyUrl}`;
+                        // This won't re-launch the browser, but sets up for next full attempt if login fails here.
+                        // For immediate effect, one would need to close and relaunch browser with new options, which is complex mid-flow.
+                        // Or, if supported by puppeteer, change proxy settings on the fly for the existing page/browser.
+                        // For now, we rely on retry of page.goto() with potentially new proxy for next HTTP reqs via browser args.
+                        console.log('Proxy server argument updated for subsequent attempts/navigations if browser were re-launched.');
+                         // Puppeteer does not allow changing proxy of an existing page/browser directly after launch without CDP or complex workarounds.
+                         // The best we can do with proxyConfiguration.newUrl() is for subsequent browser launches or if the current connection miraculously works for a bit.
+                    } catch (proxyRotError) {
+                        console.warn(`Failed to get a new proxy URL from configuration: ${proxyRotError.message}`);
                     }
                 }
                 
@@ -191,11 +209,10 @@ async function scrapeLinkedIn() {
                     console.error('All login page navigation attempts failed.');
                     throw error;
                 }
-                await new Promise(resolve => setTimeout(resolve, 5000));
+                await new Promise(resolve => setTimeout(resolve, 5000 + Math.random() * 2000)); // Add jitter to retry delay
             }
         }
 
-        // Check if login form is present
         const loginFormExists = await page.evaluate(() => {
             return !!document.querySelector('#username') && !!document.querySelector('#password');
         });
@@ -205,21 +222,17 @@ async function scrapeLinkedIn() {
             const usernameSelector = '#username';
             const passwordSelector = '#password';
             
-            console.log('Waiting for username and password fields...');
             await page.waitForSelector(usernameSelector, { timeout: 60000 });
             await page.waitForSelector(passwordSelector, { timeout: 60000 });
             console.log('Username and password fields found.');
 
-            // Add random delays to simulate human typing
             await page.type(usernameSelector, input.username, { delay: Math.floor(Math.random() * 150) + 50 });
             await new Promise(r => setTimeout(r, Math.floor(Math.random() * 1000) + 500));
             await page.type(passwordSelector, input.password, { delay: Math.floor(Math.random() * 100) + 30 });
             console.log('Credentials typed in with human-like delays.');
             
-            // Small delay before clicking login
             await new Promise(r => setTimeout(r, Math.floor(Math.random() * 1000) + 500));
             
-            console.log('Clicking login button and waiting for navigation...');
             await Promise.all([
                 page.click('button[type="submit"]'),
                 page.waitForNavigation({ 
@@ -233,11 +246,8 @@ async function scrapeLinkedIn() {
         
         console.log('Login flow completed, current URL:', page.url());
 
-        // Store cookies after login for potential reuse
         const cookies = await page.cookies();
         console.log(`Stored ${cookies.length} cookies after login.`);
-        
-        // Add a longer delay to stabilize the session
         await new Promise(resolve => setTimeout(resolve, 5000));
 
         const posts = [];
@@ -251,7 +261,7 @@ async function scrapeLinkedIn() {
                         console.log(`Navigating to profile ${profileUrl} (attempt ${4 - retries}/3)...`);
                         await page.goto(profileUrl, {
                             waitUntil: ['networkidle2', 'domcontentloaded'],
-                            timeout: 120000  // Extended timeout for proxies
+                            timeout: 120000
                         });
                         console.log(`Navigation to profile ${profileUrl} successful. Current URL: ${page.url()}`);
                         break;
@@ -262,14 +272,12 @@ async function scrapeLinkedIn() {
                              console.error(`All navigation attempts for ${profileUrl} failed.`);
                             throw error;
                         }
-                        await new Promise(resolve => setTimeout(resolve, 5000));
+                        await new Promise(resolve => setTimeout(resolve, 7000 + Math.random() * 3000));
                     }
                 }
 
-                // Add a delay after navigation to give page time to fully load
                 await new Promise(resolve => setTimeout(resolve, 7000));
 
-                // Check for login/join page
                 console.log(`Page URL before attempting to find selectors on ${profileUrl}: ${page.url()}`);
                 const isLikelyLoginPage = await page.evaluate(() => {
                     return !!(
@@ -301,7 +309,6 @@ async function scrapeLinkedIn() {
                     throw new Error(`Redirected to a login/join page at ${profileUrl} when profile content was expected. Aborting scrape for this profile.`);
                 }
 
-                // Try to manually click any "Sign in" buttons if they exist
                 try {
                     const hasSignInButton = await page.evaluate(() => {
                         const signInButton = document.querySelector('a[data-tracking-control-name="auth_wall_desktop_profile-signin-button"]');
@@ -316,7 +323,6 @@ async function scrapeLinkedIn() {
                         console.log('Found and clicked "Sign In" button on auth wall.');
                         await page.waitForNavigation({ timeout: 30000 });
                         
-                        // Now check for login form and perform login again if needed
                         const loginFormAppeared = await page.evaluate(() => {
                             return !!document.querySelector('#username') && !!document.querySelector('#password');
                         });
@@ -331,7 +337,6 @@ async function scrapeLinkedIn() {
                             ]);
                             console.log('Logged in again after auth wall. Current URL:', page.url());
                             
-                            // Navigate back to profile
                             await page.goto(profileUrl, { 
                                 waitUntil: ['networkidle2', 'domcontentloaded'],
                                 timeout: 60000 
@@ -341,7 +346,6 @@ async function scrapeLinkedIn() {
                     }
                 } catch (authWallError) {
                     console.warn('Error handling auth wall:', authWallError.message);
-                    // Continue anyway
                 }
                 
                 console.log(`Waiting for profile main content on ${profileUrl}...`);
@@ -356,7 +360,6 @@ async function scrapeLinkedIn() {
                         console.log(`Profile main content loaded for ${profileUrl} using selector: #profile-content`);
                     } catch (e2) {
                         console.error(`Both primary and alternative selectors for profile main content failed for ${profileUrl}: ${e2.message}`);
-                        // Save HTML content for debugging if selectors fail
                         if (page && typeof page.content === 'function') {
                             try {
                                 const htmlContent = await page.content();
@@ -367,19 +370,17 @@ async function scrapeLinkedIn() {
                                 console.warn(`Could not get HTML content for ${profileUrl}: ${htmlError.message}`);
                             }
                         }
-                        // Try to take a screenshot as a fallback
                         if (page && typeof page.screenshot === 'function') {
                             try {
                                 const safeProfileUrl = profileUrl.replace(/[^a-zA-Z0-9]/g, '_');
                                 await page.screenshot({ path: `error_screenshot_${safeProfileUrl}.png` });
                                 console.log(`Error screenshot saved for profile ${profileUrl} as error_screenshot_${safeProfileUrl}.png`);
                                 await Actor.setValue(`error_screenshot_${safeProfileUrl}.png_kvs`, `Screenshot for ${profileUrl} when selectors failed.`);
-
                             } catch (screenshotError) {
                                 console.warn(`Failed to take error screenshot for ${profileUrl} when selectors failed: ${screenshotError.message}`);
                             }
                         }
-                        throw e2; // Re-throw the error to skip this profile
+                        throw e2;
                     }
                 }
 
@@ -452,7 +453,7 @@ async function scrapeLinkedIn() {
                     await page.evaluate(() => {
                         window.scrollTo(0, document.documentElement.scrollHeight);
                     });
-                    await new Promise(resolve => setTimeout(resolve, 3000));
+                    await new Promise(resolve => setTimeout(resolve, 3000 + Math.random()*1000)); // Jittered scroll delay
                 }
                 console.log(`Finished scroll loop for ${profileUrl}. Found ${loadedPosts.length} elements to process.`);
 
@@ -489,7 +490,7 @@ async function scrapeLinkedIn() {
                             });
                             profilePostCount++;
                         } else {
-                            console.warn('Extracted post with no text content.');
+                            // console.warn('Extracted post with no text content.'); // Can be noisy
                         }
 
                     } catch (extractError) {
@@ -500,13 +501,11 @@ async function scrapeLinkedIn() {
 
             } catch (profileError) {
                 console.error(`Failed to scrape profile ${profileUrl}: ${profileError.message}`);
-                // Fallback screenshot if other attempts inside the nested try-catch failed or were not reached
                 if (page && typeof page.screenshot === 'function') {
                      try {
                         const safeProfileUrl = profileUrl.replace(/[^a-zA-Z0-9]/g, '_');
                         await page.screenshot({ path: `fallback_error_screenshot_${safeProfileUrl}.png` });
                         console.log(`Fallback error screenshot saved for profile ${profileUrl} as fallback_error_screenshot_${safeProfileUrl}.png`);
-                        // Attempt to also save this to KVS if not already done by inner catch
                          await Actor.setValue(`fallback_error_screenshot_${safeProfileUrl}.png_kvs`, `Fallback screenshot for ${profileUrl}.`);
                     } catch (screenshotError) {
                         console.warn(`Failed to take fallback error screenshot for ${profileUrl}: ${screenshotError.message}`);
