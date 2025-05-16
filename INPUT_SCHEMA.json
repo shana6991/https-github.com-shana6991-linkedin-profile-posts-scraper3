@@ -1,81 +1,85 @@
 {
     "title": "LinkedIn Profile Posts Scraper",
-    "description": "Scrapes posts from LinkedIn profiles",
+    "description": "Scrapes posts from LinkedIn profiles using Puppeteer, with robust proxy handling.",
     "type": "object",
     "schemaVersion": 1,
     "properties": {
         "username": {
             "title": "LinkedIn Username",
             "type": "string",
-            "description": "Your LinkedIn account username/email",
+            "description": "Your LinkedIn account username/email.",
             "editor": "textfield"
         },
         "password": {
             "title": "LinkedIn Password",
             "type": "string",
-            "description": "Your LinkedIn account password",
+            "description": "Your LinkedIn account password.",
             "editor": "textfield",
             "isSecret": true
         },
         "profileUrls": {
             "title": "Profile URLs",
             "type": "array",
-            "description": "List of LinkedIn profile URLs to scrape",
+            "description": "List of LinkedIn profile URLs to scrape.",
             "editor": "stringList",
             "uniqueItems": true,
             "minItems": 1
         },
         "maxPosts": {
-            "title": "Maximum Posts",
+            "title": "Maximum Posts per Profile",
             "type": "integer",
-            "description": "Maximum number of posts to scrape (0 for unlimited)",
+            "description": "Maximum number of posts to scrape per profile (0 for unlimited).",
             "minimum": 0,
-            "default": 0,
+            "default": 10,
             "nullable": true
         },
-        "useProxy": {
-            "title": "Use Proxy",
-            "type": "boolean",
-            "description": "STRONGLY RECOMMENDED: Use Apify proxies to avoid LinkedIn's authwall. Make sure Apify proxy is enabled in your account settings.",
-            "default": true
+        "proxyConfiguration": {
+            "title": "Proxy configuration",
+            "type": "object",
+            "description": "Select proxy type. Using Apify Residential or Datacenter proxies is STRONGLY RECOMMENDED to avoid LinkedIn blocks. Ensure your Apify account has access to the selected proxy type.",
+            "editor": "proxy",
+            "prefill": {
+                "useApifyProxy": true,
+                "apifyProxyGroups": ["RESIDENTIAL"]
+            }
         },
         "includeComments": {
             "title": "Include Comments",
             "type": "boolean",
-            "description": "Whether to scrape comments for each post",
+            "description": "Whether to scrape comments for each post (Feature not fully implemented yet).",
             "editor": "checkbox",
             "default": false
         },
         "maxCommentsPerPost": {
             "title": "Maximum Comments per Post",
             "type": "integer",
-            "description": "Maximum number of comments to scrape per post (if comments are enabled)",
+            "description": "Maximum number of comments to scrape per post (if comments are enabled).",
             "editor": "number",
             "default": 10,
             "minimum": 1,
             "maximum": 100
         },
         "dateFrom": {
-            "title": "Start Date",
+            "title": "Start Date (Optional)",
             "type": "string",
-            "description": "Only include posts from this date (format: YYYY-MM-DD)",
+            "description": "Only include posts from this date (format: YYYY-MM-DD).",
             "editor": "textfield",
             "nullable": true
         },
         "dateTo": {
-            "title": "End Date",
+            "title": "End Date (Optional)",
             "type": "string",
-            "description": "Only include posts until this date (format: YYYY-MM-DD)",
+            "description": "Only include posts until this date (format: YYYY-MM-DD).",
             "editor": "textfield",
             "nullable": true
         },
         "includeMedia": {
-            "title": "Include Media",
+            "title": "Include Media URLs (Optional)",
             "type": "boolean",
-            "description": "Whether to extract media URLs (images, videos) from posts",
+            "description": "Whether to extract media URLs (images, videos) from posts (Feature not fully implemented yet).",
             "editor": "checkbox",
             "default": false
         }
     },
-    "required": ["username", "password", "profileUrls"]
+    "required": ["username", "password", "profileUrls", "proxyConfiguration"]
 }
