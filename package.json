@@ -10,6 +10,8 @@
     "apify": "^3.0.0",
     "puppeteer": "*",
     "puppeteer-extra": "^3.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.1"
+    "puppeteer-extra-plugin-stealth": "^2.11.1",
+    "moment": "^2.29.4",
+    "proxy-chain": "^2.3.0"
   }
 }
