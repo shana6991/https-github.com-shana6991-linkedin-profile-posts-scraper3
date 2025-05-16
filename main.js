@@ -8,8 +8,10 @@ puppeteer.use(StealthPlugin());
 
 // Initialize the actor
 Actor.init();
+Actor.log.info('Actor initialized.'); // New log
 
 async function scrapeLinkedIn() {
+    Actor.log.info('scrapeLinkedIn function started.'); // New log
     let browser = null;
     let page = null;
 
@@ -23,6 +25,12 @@ async function scrapeLinkedIn() {
             maxPosts = 0,
             useProxy = false
         } = input;
+
+        // Check if profileUrls is provided and is an array
+        if (!profileUrls || !Array.isArray(profileUrls) || profileUrls.length === 0) {
+            Actor.log.warn('No profile URLs provided or profileUrls is not a valid array. Exiting peacefully.');
+            return; // Exit if no URLs
+        }
 
         Actor.log.info('Launching browser...');
         browser = await puppeteer.launch({
@@ -58,8 +66,8 @@ async function scrapeLinkedIn() {
         });
         Actor.log.info('Request interception set up.');
 
-        page.setDefaultNavigationTimeout(100000); // ~1.5 minutes for default navigation
-        page.setDefaultTimeout(60000); // 1 minute for other actions
+        page.setDefaultNavigationTimeout(100000);
+        page.setDefaultTimeout(60000);
         Actor.log.info('Default timeouts set.');
 
         Actor.log.info('Logging in to LinkedIn...');
@@ -69,8 +77,8 @@ async function scrapeLinkedIn() {
             try {
                 Actor.log.info(`Navigating to login page (attempt ${4 - retries}/3)...`);
                 await page.goto('https://www.linkedin.com/login', {
-                    waitUntil: ['networkidle2', 'domcontentloaded'], // Changed to networkidle2
-                    timeout: 90000 // Reduced to 90 seconds
+                    waitUntil: ['networkidle2', 'domcontentloaded'],
+                    timeout: 90000
                 });
                 Actor.log.info('Login page navigation successful.');
                 break;
@@ -81,7 +89,7 @@ async function scrapeLinkedIn() {
                     Actor.log.error('All login page navigation attempts failed.');
                     throw error;
                 }
-                await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5s before retry
+                await new Promise(resolve => setTimeout(resolve, 5000));
             }
         }
 
@@ -101,8 +109,8 @@ async function scrapeLinkedIn() {
         await Promise.all([
             page.click('button[type="submit"]'),
             page.waitForNavigation({ 
-                waitUntil: ['networkidle2', 'domcontentloaded'], // Changed to networkidle2
-                timeout: 90000 // Reduced to 90 seconds 
+                waitUntil: ['networkidle2', 'domcontentloaded'],
+                timeout: 90000 
             })
         ]);
         Actor.log.info('Login successful, navigation complete.');
@@ -117,8 +125,8 @@ async function scrapeLinkedIn() {
                     try {
                         Actor.log.info(`Navigating to profile ${profileUrl} (attempt ${4 - retries}/3)...`);
                         await page.goto(profileUrl, {
-                            waitUntil: ['networkidle2', 'domcontentloaded'], // Changed to networkidle2
-                            timeout: 90000 // Reduced to 90 seconds
+                            waitUntil: ['networkidle2', 'domcontentloaded'],
+                            timeout: 90000
                         });
                         Actor.log.info(`Navigation to profile ${profileUrl} successful.`);
                         break;
@@ -127,7 +135,7 @@ async function scrapeLinkedIn() {
                         retries--;
                         if (retries === 0) {
                              Actor.log.error(`All navigation attempts for ${profileUrl} failed.`);
-                            throw error; // Rethrow to be caught by outer try-catch for this profile
+                            throw error;
                         }
                         await new Promise(resolve => setTimeout(resolve, 5000));
                     }
@@ -141,7 +149,7 @@ async function scrapeLinkedIn() {
                     'a[href*="detail/recent-activity/shares"]',
                     'a[href*="detail/recent-activity/posts"]',
                     'a[href*="recent-activity/all"]',
-                    'a[data-test-id="activity-section"]' // Might be for newer UI
+                    'a[data-test-id="activity-section"]'
                 ];
 
                 let activityButton = null;
@@ -170,19 +178,19 @@ async function scrapeLinkedIn() {
                 Actor.log.info(`Activity page navigation complete for ${profileUrl}.`);
 
                 Actor.log.info(`Waiting for posts to load on activity page of ${profileUrl}...`);
-                await new Promise(resolve => setTimeout(resolve, 7000)); // Increased wait for posts to appear
+                await new Promise(resolve => setTimeout(resolve, 7000));
 
                 let loadedPosts = [];
                 let previousHeight = 0;
                 let noNewPostsCount = 0;
-                const maxScrollAttempts = 10; // Max attempts if no new posts are loaded
+                const maxScrollAttempts = 10;
 
                 Actor.log.info(`Starting scroll loop for ${profileUrl}...`);
                 while (noNewPostsCount < maxScrollAttempts) {
-                    loadedPosts = await page.$$('.occludable-update, .feed-shared-update-v2'); // Common selectors for posts
+                    loadedPosts = await page.$$('.occludable-update, .feed-shared-update-v2');
                     Actor.log.info(`Found ${loadedPosts.length} potential post elements in current view on ${profileUrl}.`);
                     
-                    if (maxPosts > 0 && posts.length + loadedPosts.length >= maxPosts) { // Check combined posts
+                    if (maxPosts > 0 && posts.length + loadedPosts.length >= maxPosts) {
                          Actor.log.info(`Max posts limit (${maxPosts}) potentially reached. Will process current view and then stop for this profile.`);
                          break; 
                     }
@@ -192,7 +200,7 @@ async function scrapeLinkedIn() {
                         noNewPostsCount++;
                         Actor.log.info(`Scroll height unchanged. Attempt ${noNewPostsCount}/${maxScrollAttempts} on ${profileUrl}.`);
                     } else {
-                        noNewPostsCount = 0; // Reset counter if new content loaded
+                        noNewPostsCount = 0;
                     }
 
                     if (noNewPostsCount >= maxScrollAttempts){
@@ -205,7 +213,7 @@ async function scrapeLinkedIn() {
                     await page.evaluate(() => {
                         window.scrollTo(0, document.documentElement.scrollHeight);
                     });
-                    await new Promise(resolve => setTimeout(resolve, 3000)); // Wait for content to load after scroll
+                    await new Promise(resolve => setTimeout(resolve, 3000));
                 }
                 Actor.log.info(`Finished scroll loop for ${profileUrl}. Found ${loadedPosts.length} elements to process.`);
 
@@ -252,9 +260,7 @@ async function scrapeLinkedIn() {
                 Actor.log.info(`Scraped ${profilePostCount} posts from ${profileUrl}. Total posts: ${posts.length}`);
 
             } catch (profileError) {
-                // Log error for this specific profile and continue to the next one
                 Actor.log.error(`Failed to scrape profile ${profileUrl}: ${profileError.message}`);
-                // Optionally save partial data or take a screenshot for this specific profile error
                 if (page && typeof page.screenshot === 'function') {
                     try {
                         await page.screenshot({ path: `error_${profileUrl.replace(/[^a-zA-Z0-9]/g, '_')}.png` });
@@ -283,6 +289,8 @@ async function scrapeLinkedIn() {
                 Actor.log.warn(`Failed to take global error screenshot: ${screenshotError.message}`);
             }
         }
+        // When an error occurs, Actor.main will handle exiting after this throw.
+        // No need to call Actor.exit() here as Actor.main manages it.
         throw error;
     } finally {
         if (browser) {
@@ -294,9 +302,10 @@ async function scrapeLinkedIn() {
                 Actor.log.error(`Error closing browser: ${closeError.message}`);
             }
         }
-        // Finalize the actor run
-        await Actor.exit();
+        // Actor.main will handle the final exit, so no explicit Actor.exit() here.
+        Actor.log.info('scrapeLinkedIn function finished.');
     }
 }
 
+Actor.log.info('About to call Actor.main(scrapeLinkedIn)'); // New log
 Actor.main(scrapeLinkedIn);
