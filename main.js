@@ -20,31 +20,34 @@ async function testAndGetWorkingProxyConfiguration(userInputProxyConfig) {
     const proxyTestAttempts = [];
 
     // 1. Try user-defined Apify proxy from input
-    if (userInputProxyConfig && userInputProxyConfig.useApifyProxy) {
-        proxyTestAttempts.push({ config: userInputProxyConfig, label: 'User-defined Apify Proxy' });
+    if (userInputProxyConfig && userInputProxyConfig.useApifyProxy && userInputProxyConfig.apifyProxyGroups) {
+        proxyTestAttempts.push({
+            options: {
+                groups: userInputProxyConfig.apifyProxyGroups,
+                countryCode: userInputProxyConfig.apifyProxyCountry,
+            },
+            label: 'User-defined Apify Proxy',
+        });
     }
-    // 2. Try user-defined custom proxy URLs (take the first one if any)
-    // Note: PuppeteerCrawler expects a ProxyConfiguration object or a direct proxyUrl.
-    // For simplicity, we'll focus on Apify Proxy integration here. Direct URL usage needs different handling with crawler.
-    // If direct proxy URLs are essential, this part needs specific adaptation for crawler's `proxyUrl` or per-request proxying.
 
-    // 3. Fallback to RESIDENTIAL
+    // 2. Fallback to RESIDENTIAL
     proxyTestAttempts.push({
-        config: { useApifyProxy: true, apifyProxyGroups: ['RESIDENTIAL'] },
+        options: { groups: ['RESIDENTIAL'] },
         label: 'Apify RESIDENTIAL (Fallback)',
     });
 
-    // 4. Fallback to DATACENTER
+    // 3. Fallback to DATACENTER
     proxyTestAttempts.push({
-        config: { useApifyProxy: true, apifyProxyGroups: ['DATACENTER'] },
+        options: { groups: ['DATACENTER'] },
         label: 'Apify DATACENTER (Fallback)',
     });
 
     for (const attempt of proxyTestAttempts) {
-        customLog('info', `[ProxySetup] Attempting to test proxy: ${attempt.label}`, attempt.config);
+        customLog('info', `[ProxySetup] Attempting to test proxy: ${attempt.label}`, attempt.options);
         let browser = null;
         try {
-            const tempProxyConfig = new ProxyConfiguration(attempt.config);
+            // Directly pass Crawlee-compatible options to ProxyConfiguration constructor
+            const tempProxyConfig = new ProxyConfiguration(attempt.options);
             const proxyUrl = await tempProxyConfig.newUrl(); // Get a URL for testing
             if (!proxyUrl) {
                 customLog('warning', `[ProxySetup] Could not get a proxy URL for ${attempt.label}.`);
@@ -94,7 +97,6 @@ async function checkForAuthwall(page, contextMessage) {
         customLog('error', `[${contextMessage}] LinkedIn Authwall detected at URL: ${currentUrl}.`);
         await Actor.setValue('AUTHWALL_DETECTED_URL', currentUrl);
         await Actor.setValue(`AUTHWALL_SCREENSHOT_${contextMessage.replace(/\s+/g, '_')}`, await page.screenshot({fullPage: true, type: 'jpeg'}), { contentType: 'image/jpeg' });
-        // In Crawlee, throwing an error in requestHandler will mark the request as failed.
         throw new Error(`Authwall detected: ${contextMessage} at ${currentUrl}`);
     }
     customLog('debug', `[${contextMessage}] No authwall detected at ${currentUrl}.`);
@@ -104,10 +106,6 @@ async function checkForAuthwall(page, contextMessage) {
 // --- AutoScroll Utility ---
 async function autoScroll(page, stopConditionCallback) {
     await page.evaluate(async (stopCbStr) => {
-        // Reconstruct the callback inside browser context if it's a simple one
-        // For complex callbacks, this approach might be limited.
-        // const stopCondition = new Function(`return (${stopCbStr})`)(); // Be very careful with this if cb is complex
-
         await new Promise((resolve) => {
             let totalHeight = 0;
             const distance = 100;
@@ -115,21 +113,13 @@ async function autoScroll(page, stopConditionCallback) {
                 const scrollHeight = document.body.scrollHeight;
                 window.scrollBy(0, distance);
                 totalHeight += distance;
-
-                // if (stopCondition && await stopCondition()) {
-                //     clearInterval(timer);
-                //     resolve();
-                // }
-
                 if (totalHeight >= scrollHeight - window.innerHeight) {
-                    // Check if truly at bottom, or if more content might load
-                    // For now, simple height check.
                     clearInterval(timer);
                     resolve();
                 }
-            }, 300); // Slower scroll, more gentle
+            }, 300);
         });
-    }, /* stopConditionCallback ? stopConditionCallback.toString() : null */); // Passing complex functions to browser needs care
+    }); 
 }
 
 
@@ -139,7 +129,7 @@ Actor.main(async () => {
         linkedinProfileUrl,
         email,
         password,
-        proxyConfiguration: userProxyInput, // This is the user's input from INPUT_SCHEMA
+        proxyConfiguration: userProxyInput,
         maxPosts = 20,
         debugLog = false,
     } = input;
@@ -148,54 +138,48 @@ Actor.main(async () => {
 
     if (!linkedinProfileUrl || !email || !password) {
         customLog('error', 'Missing required input: linkedinProfileUrl, email, or password.');
-        await Actor.exit(1); // Use Actor.exit() for clean termination
+        await Actor.exit(1);
         return;
     }
 
     customLog('info', 'Actor starting...', { linkedinProfileUrl, maxPosts, debugLogEnabled });
 
     const proxyInfo = await testAndGetWorkingProxyConfiguration(userProxyInput);
-    let finalProxyConfiguration = null;
-    let proxyUsedLabel = "No Proxy (All tests failed or no proxy used)";
+    // Critical change: Use undefined if proxyInfo is null, as PuppeteerCrawler expects ProxyConfiguration | undefined
+    const finalProxyConfiguration = proxyInfo ? proxyInfo.proxyConfiguration : undefined;
+    let proxyUsedLabel = proxyInfo ? proxyInfo.label : "No Proxy (All tests failed or no proxy used)";
 
     if (proxyInfo) {
-        finalProxyConfiguration = proxyInfo.proxyConfiguration;
-        proxyUsedLabel = proxyInfo.label;
         customLog('info', `Using proxy configuration: ${proxyUsedLabel}`);
     } else {
         customLog('warning', 'Proceeding without a successfully tested Apify Proxy. LinkedIn scraping is likely to fail or be unreliable.');
     }
 
     const crawler = new PuppeteerCrawler({
-        proxyConfiguration: finalProxyConfiguration,
+        proxyConfiguration: finalProxyConfiguration, // This can now be undefined
         launchContext: {
             launchOptions: {
-                headless: Actor.isAtHome() ? 'new' : false, // 'new' for headless on platform, false locally for easier debug
+                headless: Actor.isAtHome() ? 'new' : false,
                 args: [
                     '--no-sandbox',
                     '--disable-setuid-sandbox',
                     '--window-size=1920,1080',
-                    // '--disable-dev-shm-usage', // Common for Docker environments
-                    // '--disable-accelerated-2d-canvas',
-                    // '--disable-gpu',
                 ],
             },
             userAgent: DEFAULT_USER_AGENT,
-            useChrome: Actor.isAtHome(), // Use full Chrome on Apify platform
+            useChrome: Actor.isAtHome(),
         },
         browserPoolOptions: {
-            maxOpenPagesPerBrowser: 1, // LinkedIn is sensitive, one page per browser to be safe
-            // useFingerprints: true, // Enable advanced fingerprinting - good for tough sites
+            maxOpenPagesPerBrowser: 1,
         },
         minConcurrency: 1,
-        maxConcurrency: 1, // LinkedIn is very sensitive to concurrent requests from the same IP/session
+        maxConcurrency: 1,
         navigationTimeoutSecs: 120,
         requestHandlerTimeoutSecs: 180,
 
         requestHandler: async ({ page, request, log }) => {
-            log.info(`Processing ${request.url}...`); // Using Crawlee's logger
+            log.info(`Processing ${request.url}...`);
 
-            // --- Login Logic ---
             try {
                 log.info('Attempting to log in to LinkedIn...');
                 await page.goto(LINKEDIN_LOGIN_URL, { waitUntil: 'networkidle2', timeout: 90000 });
@@ -211,13 +195,12 @@ Actor.main(async () => {
 
                 log.debug('Waiting for navigation after login attempt...');
                 try {
-                     // Wait for a common element on the feed or a specific redirect that indicates success/failure
                     await page.waitForFunction(
-                        () => document.querySelector('.feed-identity-module') || // Feed page
-                               document.querySelector('[data-test-id="global-nav-search-icon"]') || // Another feed element
-                               window.location.href.includes('/feed/') || // URL check for feed
-                               window.location.href.includes('/authwall') || // Authwall
-                               document.querySelector('form#login-form') === null, // Login form no longer present
+                        () => document.querySelector('.feed-identity-module') ||
+                               document.querySelector('[data-test-id="global-nav-search-icon"]') ||
+                               window.location.href.includes('/feed/') ||
+                               window.location.href.includes('/authwall') ||
+                               document.querySelector('form#login-form') === null,
                         { timeout: 75000 }
                     );
                 } catch (e) {
@@ -238,17 +221,14 @@ Actor.main(async () => {
                 }
             } catch (e) {
                 log.error(`Error during login: ${e.message}`, { stack: e.stack });
-                // Saving screenshot handled by failedRequestHandler if error is re-thrown
-                throw e; // Re-throw to let failedRequestHandler handle it
+                throw e;
             }
 
-            // --- Profile Navigation & Scraping ---
-            log.info(`Navigating to profile: ${request.loadedUrl}`); // loadedUrl is the target profile
+            log.info(`Navigating to profile: ${request.loadedUrl}`);
             try {
                 await page.goto(request.loadedUrl, { waitUntil: 'networkidle2', timeout: 90000 });
                 await checkForAuthwall(page, 'Profile Page Load');
-                 // Wait for a key element on the profile page to ensure it's loaded
-                await page.waitForSelector('h1.text-heading-xlarge', { timeout: 45000 }); // Profile name
+                await page.waitForSelector('h1.text-heading-xlarge', { timeout: 45000 });
                 log.info('Successfully navigated to profile page.');
             } catch (e) {
                 log.error(`Error navigating to profile page ${request.loadedUrl}: ${e.message}`, { stack: e.stack });
@@ -258,20 +238,18 @@ Actor.main(async () => {
             log.info('Attempting to scrape posts...');
             let postsScrapedCount = 0;
             try {
-                // Selector for the main content area where posts appear
-                const postsFeedSelector = 'main.scaffold-layout__main'; // Adjust if LinkedIn changes this
+                const postsFeedSelector = 'main.scaffold-layout__main';
                 await page.waitForSelector(postsFeedSelector, { timeout: 45000 });
 
                 let lastHeight = await page.evaluate(() => document.body.scrollHeight);
                 let noNewPostsStreak = 0;
-                const MAX_NO_NEW_POSTS_STREAK = 3; // Stop after 3 scrolls with no new content
+                const MAX_NO_NEW_POSTS_STREAK = 3;
 
                 while (maxPosts === 0 || postsScrapedCount < maxPosts) {
                     log.debug(`Scrolling to load more posts. Scraped so far: ${postsScrapedCount}/${maxPosts === 0 ? 'all' : maxPosts}`);
-                    await autoScroll(page); // Consider passing a stop condition based on postsScrapedCount
-                    await page.waitForTimeout(5000 + Math.random() * 2000); // Wait for content to load
+                    await autoScroll(page);
+                    await page.waitForTimeout(5000 + Math.random() * 2000);
 
-                    // More specific selector for individual post elements
                     const postElements = await page.$$('div[data-urn^="urn:li:activity:"]');
 
                     if (postElements.length === 0 && postsScrapedCount === 0) {
@@ -288,7 +266,6 @@ Actor.main(async () => {
 
                         let postText = '';
                         try {
-                            // Combined selector for different text structures
                             const textElement = await postElement.$('.feed-shared-update-v2__description .feed-shared-inline-show-more-text, .update-components-text.break-words');
                             if (textElement) {
                                 postText = await textElement.evaluate(el => el.innerText.trim());
@@ -301,7 +278,7 @@ Actor.main(async () => {
 
                         let postTimestamp = '';
                         try {
-                            const timeElement = await postElement.$('.update-components-text-view__timestamp'); // More reliable timestamp
+                            const timeElement = await postElement.$('.update-components-text-view__timestamp');
                             if (timeElement) {
                                 postTimestamp = await timeElement.evaluate(el => el.innerText.trim());
                             } else {
@@ -311,21 +288,17 @@ Actor.main(async () => {
                             log.debug(`Could not extract timestamp for a post: ${e.message}`);
                         }
                         
-                        let actualPostContent = postText; // Use the most specific text
-                        if (!actualPostContent) { // Fallback if specific selectors fail
+                        let actualPostContent = postText;
+                        if (!actualPostContent) {
                              const genericContent = await postElement.$('.feed-shared-update-v2__commentary, .update-components-text');
                              if(genericContent) actualPostContent = await genericContent.evaluate(el => el.innerText.trim());
                         }
 
-
-                        if (actualPostContent) { // Only push if we have some content
+                        if (actualPostContent) {
                             await Actor.pushData({
                                 profileUrl: request.loadedUrl,
                                 postText: actualPostContent,
                                 postTimestamp,
-                                // Likes/comments extraction needs more specific selectors & interaction, e.g.
-                                // '.social-details-social-counts__reactions-count' for likes
-                                // '.social-details-social-counts__comments' for comments
                                 likes: 'N/A (Selector TODO)',
                                 comments: 'N/A (Selector TODO)',
                                 scrapedAt: new Date().toISOString(),
@@ -347,7 +320,6 @@ Actor.main(async () => {
 
                     const currentHeight = await page.evaluate(() => document.body.scrollHeight);
                     if (newPostsInThisScroll === 0 && currentHeight === lastHeight) {
-                         // Only increment streak if no new posts AND height hasn't changed
                         noNewPostsStreak++;
                         log.debug(`No new posts loaded AND height did not change. Scroll streak: ${noNewPostsStreak}/${MAX_NO_NEW_POSTS_STREAK}`);
                         if (noNewPostsStreak >= MAX_NO_NEW_POSTS_STREAK) {
@@ -355,11 +327,10 @@ Actor.main(async () => {
                             break;
                         }
                     } else {
-                        noNewPostsStreak = 0; // Reset if new posts found OR height changed
+                        noNewPostsStreak = 0;
                     }
                     lastHeight = currentHeight;
 
-                     // Break if no post elements are found at all after some scrolling, and we have some posts already
                     if (postElements.length === 0 && postsScrapedCount > 0) {
                         log.info('No more post elements found (div[data-urn^="urn:li:activity:"]). Assuming end of feed.');
                         break;
@@ -369,7 +340,7 @@ Actor.main(async () => {
 
             } catch (e) {
                 log.error(`Error during post scraping on ${request.loadedUrl}: ${e.message}`, { stack: e.stack });
-                throw e; // Re-throw for failedRequestHandler
+                throw e;
             }
         },
 
@@ -378,7 +349,7 @@ Actor.main(async () => {
             const safeUrl = request.url.replace(/[^a-zA-Z0-9]/g, '_');
             const timestamp = new Date().toISOString().replace(/:/g, '-');
             try {
-                if (page) { // Page might not exist if error happened before page creation
+                if (page) {
                      await Actor.setValue(`FAILED_REQUEST_SCREENSHOT_${safeUrl}_${timestamp}.jpg`, await page.screenshot({ fullPage: true, type: 'jpeg', quality: 70 }), { contentType: 'image/jpeg' });
                      await Actor.setValue(`FAILED_REQUEST_HTML_${safeUrl}_${timestamp}.html`, await page.content(), { contentType: 'text/html' });
                 }
