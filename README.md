@@ -1,97 +1,30 @@
 # LinkedIn Profile Posts Scraper
 
-A Node.js scraper that extracts posts from LinkedIn profiles using Puppeteer with stealth mode.
+This Apify actor scrapes posts from a specified LinkedIn profile URL.
 
-## Features
+## Input
 
-- Scrapes posts from multiple LinkedIn profiles
-- Handles authentication securely
-- Uses stealth mode to avoid detection
-- Configurable maximum posts limit
-- Extracts post text, timestamps, and like counts
-- Supports proxy usage (optional)
+The actor requires the following input:
 
-## Installation
+-   **LinkedIn Profile URL**: The URL of the LinkedIn profile to scrape (e.g., `https://www.linkedin.com/in/username/`).
+-   **LinkedIn Email**: Your LinkedIn login email.
+-   **LinkedIn Password**: Your LinkedIn login password.
+-   **Proxy Configuration**: Standard Apify proxy configuration. It\'s recommended to use RESIDENTIAL proxies. The actor will test the provided configuration and attempt fallbacks if it fails.
+-   **Maximum Posts to Scrape** (Optional): Maximum number of posts to retrieve. Defaults to 20.
+-   **Enable Debug Log** (Optional): Set to true for verbose logging. Defaults to false.
 
-1. Clone this repository
-2. Install dependencies:
-```bash
-npm install
-```
+## Output
 
-## Configuration
+The actor outputs a dataset containing the scraped posts, including details like post content, likes, comments count, and timestamp.
 
-Create a `.env` file with your LinkedIn credentials (optional):
-```
-LINKEDIN_USERNAME=your_email@example.com
-LINKEDIN_PASSWORD=your_password
-```
+## Proxy Usage
 
-## Usage
+The actor is designed to use proxies to avoid issues with LinkedIn\'s rate limiting and security measures. It will first attempt to use the proxy configuration provided in the input. If this configuration fails a pre-flight connectivity test, it will attempt to use Apify RESIDENTIAL proxies, then Apify DATACENTER proxies as fallbacks. If all proxy attempts fail, it will try to run without a proxy, which is likely to fail for LinkedIn.
 
-1. Run the scraper:
-```bash
-npm start
-```
+## Authwall Detection
 
-2. Or provide input directly:
-```bash
-node main.js
-```
+The actor includes basic logic to detect LinkedIn\'s "authwall" (authentication wall). If an authwall is encountered at critical stages (e.g., after login, when accessing a profile), the actor will log the event and may terminate to prevent further issues with the account or IP.
 
-## Input Schema
+## Disclaimer
 
-The scraper accepts the following input parameters:
-
-- `username` (required): LinkedIn account username/email
-- `password` (required): LinkedIn account password
-- `profileUrls` (required): Array of LinkedIn profile URLs to scrape
-- `maxPosts` (optional): Maximum number of posts to scrape (0 for unlimited)
-- `useProxy` (optional): Whether to use a proxy for scraping (default: false)
-
-Example input:
-```json
-{
-    "username": "your_email@example.com",
-    "password": "your_password",
-    "profileUrls": [
-        "https://www.linkedin.com/in/username1",
-        "https://www.linkedin.com/in/username2"
-    ],
-    "maxPosts": 50,
-    "useProxy": false
-}
-```
-
-## Output Format
-
-The scraper outputs an array of posts with the following structure:
-
-```json
-{
-    "text": "Post content",
-    "timestamp": "2024-03-15T10:30:00.000Z",
-    "likes": 42,
-    "profileUrl": "https://www.linkedin.com/in/username",
-    "scrapedAt": "2024-03-15T12:00:00.000Z"
-}
-```
-
-## Error Handling
-
-- The scraper takes screenshots on errors for debugging
-- Failed profile scrapes won't stop the entire process
-- Network errors are handled gracefully
-
-## Dependencies
-
-- apify: ^3.1.15
-- moment: ^2.29.4
-- proxy-chain: ^2.3.0
-- puppeteer: ^21.0.0
-- puppeteer-extra: ^3.3.6
-- puppeteer-extra-plugin-stealth: ^2.11.2
-
-## License
-
-ISC
+Automating LinkedIn interactions may be against their Terms of Service. Use this actor responsibly and at your own risk.
