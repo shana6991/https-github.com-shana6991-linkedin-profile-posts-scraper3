@@ -8,10 +8,10 @@ puppeteer.use(StealthPlugin());
 
 // Initialize the actor
 Actor.init();
-Actor.log.info('Actor initialized.'); // New log
+// Actor.log should be used after init, preferably within Actor.main scope or after full initialization
 
 async function scrapeLinkedIn() {
-    Actor.log.info('scrapeLinkedIn function started.'); // New log
+    Actor.log.info('scrapeLinkedIn function started.'); 
     let browser = null;
     let page = null;
 
@@ -26,10 +26,9 @@ async function scrapeLinkedIn() {
             useProxy = false
         } = input;
 
-        // Check if profileUrls is provided and is an array
         if (!profileUrls || !Array.isArray(profileUrls) || profileUrls.length === 0) {
             Actor.log.warn('No profile URLs provided or profileUrls is not a valid array. Exiting peacefully.');
-            return; // Exit if no URLs
+            return; 
         }
 
         Actor.log.info('Launching browser...');
@@ -289,8 +288,6 @@ async function scrapeLinkedIn() {
                 Actor.log.warn(`Failed to take global error screenshot: ${screenshotError.message}`);
             }
         }
-        // When an error occurs, Actor.main will handle exiting after this throw.
-        // No need to call Actor.exit() here as Actor.main manages it.
         throw error;
     } finally {
         if (browser) {
@@ -302,10 +299,13 @@ async function scrapeLinkedIn() {
                 Actor.log.error(`Error closing browser: ${closeError.message}`);
             }
         }
-        // Actor.main will handle the final exit, so no explicit Actor.exit() here.
         Actor.log.info('scrapeLinkedIn function finished.');
     }
 }
 
-Actor.log.info('About to call Actor.main(scrapeLinkedIn)'); // New log
+// Actor.log can be used here if Actor.init() has fully completed and configured logging.
+// However, it's safer to use it within Actor.main or ensure the context is right.
+// For now, we'll place a log just before Actor.main to confirm execution reaches this point.
+console.log('Logging setup: About to call Actor.main(scrapeLinkedIn)'); // Changed to console.log for safety before Actor.main
+
 Actor.main(scrapeLinkedIn);
