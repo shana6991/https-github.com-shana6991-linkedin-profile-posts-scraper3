@@ -6,8 +6,13 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
 
 // Configuration de l'acteur
-// const { log } = Apify.utils; // ANCIENNE SYNTAXE
-// Remplacé par Actor.log utilisé directement
+const DEFAULT_VIEWPORT = { width: 1920, height: 1080 };
+const NAVIGATION_TIMEOUT = 60000;
+const SCREENSHOT_OPTIONS = { 
+    fullPage: true,
+    type: 'png',
+    captureBeyondViewport: false
+};
 
 // Fonction utilitaire pour parser les dates LinkedIn
 const parseLinkedInDate = (dateStr) => {
@@ -38,9 +43,7 @@ const parseLinkedInDate = (dateStr) => {
             }
         }
     }
-    // Default parsing for full dates like "2 mars 2024" or "March 2, 2024"
-    // moment needs locale to be set for month names in other languages
-    const parsedDate = moment(dateStr, ['D MMMM YYYY', 'MMMM D, YYYY', 'YYYY-MM-DD'], 'fr', true); // 'fr' for French
+    const parsedDate = moment(dateStr, ['D MMMM YYYY', 'MMMM D, YYYY', 'YYYY-MM-DD'], 'fr', true);
     if (parsedDate.isValid()) {
         return parsedDate;
     }
@@ -68,13 +71,10 @@ const extractMedia = async (postElement) => {
 const extractComments = async (postElement, page, maxComments) => {
     const comments = [];
     try {
-        // Logic to click "load more comments" or similar might be needed here
-        // For now, directly extracting visible comments
         const commentElements = await postElement.$$('div.comments-comment-item');
         for (const commentEl of commentElements.slice(0, maxComments)) {
             const author = await commentEl.$eval('span.comments-post-meta__name-text', el => el.innerText.trim()).catch(() => '');
             const text = await commentEl.$eval('div.feed-shared-comment-item__text', el => el.innerText.trim()).catch(() => '');
-            // Timestamp extraction needs refinement based on actual HTML structure
             const timestampText = await commentEl.$eval('time.feed-shared-comment-item__timestamp', el => el.innerText.trim()).catch(() => '');
             comments.push({ author, text, timestamp: parseLinkedInDate(timestampText) });
         }
@@ -82,6 +82,23 @@ const extractComments = async (postElement, page, maxComments) => {
         console.debug(`[DEBUG] Failed to extract comments: ${error.message}`);
     }
     return comments;
+};
+
+// Fonction utilitaire pour prendre des screenshots de manière sûre
+const safeScreenshot = async (page, key, options = {}) => {
+    try {
+        const screenshot = await page.screenshot({
+            ...SCREENSHOT_OPTIONS,
+            ...options
+        });
+        if (screenshot) {
+            await Actor.setValue(key, screenshot, { contentType: 'image/png' });
+            return true;
+        }
+    } catch (error) {
+        console.warn(`[WARN] Failed to take screenshot for ${key}: ${error.message}`);
+    }
+    return false;
 };
 
 Actor.main(async () => {
@@ -110,7 +127,17 @@ Actor.main(async () => {
         console.error('[ERROR] profileUrl, linkedinLogin, and linkedinPassword are required input fields.');
         throw new Error('profileUrl, linkedinLogin, and linkedinPassword are required.');
     }
-    console.log('[INFO] Input received:', { profileUrl, linkedinLogin: '***', linkedinPassword: '***', maxPosts, includeComments, maxCommentsPerPost, dateFromString, dateToString, includeMedia });
+    console.log('[INFO] Input received:', { 
+        profileUrl, 
+        linkedinLogin: '***', 
+        linkedinPassword: '***', 
+        maxPosts, 
+        includeComments, 
+        maxCommentsPerPost, 
+        dateFromString, 
+        dateToString, 
+        includeMedia 
+    });
 
     const dateFrom = dateFromString ? moment(dateFromString) : null;
     const dateTo = dateToString ? moment(dateToString) : null;
@@ -119,22 +146,39 @@ Actor.main(async () => {
     let browser;
     try {
         const launchOptions = {
-            headless: true, // Apify platform runs headful based on actor config
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
+            headless: true,
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-accelerated-2d-canvas',
+                '--disable-gpu',
+                '--window-size=1920,1080'
+            ],
+            defaultViewport: DEFAULT_VIEWPORT
         };
+
         if (proxyConfiguration && proxyConfiguration.useApifyProxy) {
-            const proxyUrl = await ProxyChain.requestUrl(proxyConfiguration.apifyProxyGroups ? proxyConfiguration.apifyProxyGroups.join(',') : null);
+            const proxyUrl = await ProxyChain.requestUrl(
+                proxyConfiguration.apifyProxyGroups ? 
+                proxyConfiguration.apifyProxyGroups.join(',') : null
+            );
             if (proxyUrl) {
                 launchOptions.args.push(`--proxy-server=${proxyUrl}`);
                 console.log(`[INFO] Using Apify Proxy: ${proxyUrl}`);
             }
         }
+
         browser = await puppeteer.launch(launchOptions);
         const page = await browser.newPage();
-        await page.setViewport({ width: 1280, height: 800 });
+        await page.setViewport(DEFAULT_VIEWPORT);
+        await page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT);
 
         console.log('[INFO] Navigating to LinkedIn login page...');
-        await page.goto('https://www.linkedin.com/login', { waitUntil: 'domcontentloaded', timeout: 60000 });
+        await page.goto('https://www.linkedin.com/login', { 
+            waitUntil: 'networkidle0', 
+            timeout: NAVIGATION_TIMEOUT 
+        });
 
         console.log('[INFO] Entering credentials...');
         await page.type('#username', linkedinLogin);
@@ -143,82 +187,74 @@ Actor.main(async () => {
 
         console.log('[INFO] Waiting for login to complete...');
         try {
-            await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 60000 });
+            await page.waitForNavigation({ 
+                waitUntil: 'networkidle0', 
+                timeout: NAVIGATION_TIMEOUT 
+            });
         } catch (e) {
             console.warn(`[WARN] waitForNavigation after login failed: ${e.message}. Checking current URL...`);
-            if (page.url().includes('/feed')) {
+            const currentUrl = await page.url();
+            
+            if (currentUrl.includes('/feed')) {
                 console.log('[INFO] Login likely successful, landed on feed page.');
-            } else if (page.url().includes('checkpoint/challenge') || page.url().includes('checkpoint/verify')) {
-                 console.error('[ERROR] LinkedIn is asking for a security check (CAPTCHA or verification).');
-                 await Actor.setValue('LOGIN_CHALLENGE_SCREENSHOT', await page.screenshot({ fullPage: true }), { contentType: 'image/png' });
-                 await Actor.setValue('LOGIN_CHALLENGE_HTML', await page.content(), { contentType: 'text/html' });
-                 throw new Error('LinkedIn security check triggered during login. Cannot proceed.');
+            } else if (currentUrl.includes('checkpoint/challenge') || currentUrl.includes('checkpoint/verify')) {
+                console.error('[ERROR] LinkedIn is asking for a security check (CAPTCHA or verification).');
+                await safeScreenshot(page, 'LOGIN_CHALLENGE_SCREENSHOT');
+                await Actor.setValue('LOGIN_CHALLENGE_HTML', await page.content(), { contentType: 'text/html' });
+                throw new Error('LinkedIn security check triggered during login. Cannot proceed.');
             } else {
-                console.error(`[ERROR] Login failed. Current URL: ${page.url()}`);
-                await Actor.setValue('LOGIN_FAILED_SCREENSHOT', await page.screenshot({ fullPage: true }), { contentType: 'image/png' });
+                console.error(`[ERROR] Login failed. Current URL: ${currentUrl}`);
+                await safeScreenshot(page, 'LOGIN_FAILED_SCREENSHOT');
                 await Actor.setValue('LOGIN_FAILED_HTML', await page.content(), { contentType: 'text/html' });
-                throw new Error(`Login failed. Unexpected page: ${page.url()}`);
+                throw new Error(`Login failed. Unexpected page: ${currentUrl}`);
             }
         }
 
         console.log('[INFO] Login successful or challenge detected and handled.');
         console.log(`[INFO] Navigating to profile: ${profileUrl}`);
-        try {
-            // This is the line (approx 115) that needs the timeout increase
-            await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 120000 }); // Increased timeout
-        } catch (navError) {
-             console.error(`[ERROR] Navigation to profile ${profileUrl} failed: ${navError.message}`);
-             await Actor.setValue(`PROFILE_NAV_ERROR_SCREENSHOT_${profileUrl.split('/').pop()}`, await page.screenshot({ fullPage: true }), { contentType: 'image/png' });
-             await Actor.setValue(`PROFILE_NAV_ERROR_HTML_${profileUrl.split('/').pop()}`, await page.content(), { contentType: 'text/html' });
-             throw navError; // Re-throw to stop execution
-        }
+        
+        await page.goto(profileUrl, { 
+            waitUntil: 'networkidle0', 
+            timeout: NAVIGATION_TIMEOUT 
+        });
         console.log(`[INFO] Successfully navigated to profile: ${profileUrl}`);
 
         // Click on "Show all posts" or "Activity" tab
         const activitySelectors = [
-            'a[href$="/recent-activity/all/"]', // Provided by user
-            'a[href$="/detail/recent-activity/shares/"]', // Common for shares
-            'a[href$="/detail/recent-activity/posts/"]', // Common for posts
-            '#navigation-index-see-all-posts', // Another possible selector
-            '//a[.//span[contains(text(),"Posts") or contains(text(),"Activité") or contains(text(),"Activity")]]' // XPath for flexibility
+            'a[href*="/recent-activity/"]',
+            'a[href*="/detail/recent-activity/"]',
+            '#navigation-index-see-all-posts',
+            'button[aria-label*="View all activity"]',
+            'button[aria-label*="Voir toute l\'activité"]'
         ];
 
         let activityLinkClicked = false;
         for (const selector of activitySelectors) {
             try {
                 console.log(`[INFO] Trying to click activity link with selector: ${selector}`);
-                if (selector.startsWith('//')) { // XPath
-                    const [activityLink] = await page.$x(selector);
-                    if (activityLink) {
-                        await activityLink.click();
-                        activityLinkClicked = true;
-                        console.log(`[INFO] Clicked activity link using XPath: ${selector}`);
-                        break;
-                    }
-                } else { // CSS Selector
-                    const activityLink = await page.$(selector);
-                    if (activityLink) {
-                        await activityLink.click();
-                        activityLinkClicked = true;
-                        console.log(`[INFO] Clicked activity link using CSS: ${selector}`);
-                        break;
-                    }
-                }
+                await page.waitForSelector(selector, { timeout: 5000 });
+                await page.click(selector);
+                activityLinkClicked = true;
+                console.log(`[INFO] Clicked activity link using selector: ${selector}`);
+                break;
             } catch (e) {
                 console.warn(`[WARN] Could not click activity link with selector ${selector}: ${e.message}`);
             }
         }
 
         if (!activityLinkClicked) {
-            console.warn('[WARN] Could not find or click the "Show all posts/activity" link. Scraping from main profile page if posts are directly visible, or may fail.');
-            await Actor.setValue('NO_ACTIVITY_LINK_CLICKED_SCREENSHOT', await page.screenshot({ fullPage: true }), { contentType: 'image/png' });
+            console.warn('[WARN] Could not find or click the "Show all posts/activity" link. Scraping from main profile page if posts are directly visible.');
+            await safeScreenshot(page, 'NO_ACTIVITY_LINK_CLICKED_SCREENSHOT');
         } else {
             try {
-                await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 60000 });
+                await page.waitForNavigation({ 
+                    waitUntil: 'networkidle0', 
+                    timeout: NAVIGATION_TIMEOUT 
+                });
                 console.log('[INFO] Navigation after clicking activity link successful.');
             } catch (e) {
                 console.warn(`[WARN] waitForNavigation after clicking activity link failed: ${e.message}. Proceeding anyway.`);
-                await Actor.setValue('ACTIVITY_LINK_NAV_FAILED_SCREENSHOT', await page.screenshot({ fullPage: true }), { contentType: 'image/png' });
+                await safeScreenshot(page, 'ACTIVITY_LINK_NAV_FAILED_SCREENSHOT');
             }
         }
         
@@ -229,10 +265,6 @@ Actor.main(async () => {
 
         while ((maxPosts === null || postsCollected.length < maxPosts) && noNewPostsStreak < 5) {
             const initialPostCount = postsCollected.length;
-            // This selector needs to be very robust. LinkedIn changes its structure often.
-            // The selector should target individual post containers.
-            // Common patterns: .feed-shared-update-v2, .occludable-update, article, [data-urn^="urn:li:activity:"], [data-urn^="urn:li:share:"]
-            // It's better to find a common wrapper for each post/update
             const postElements = await page.$$('.scaffold-finite-scroll__content > div > div');
             console.log(`[INFO] Found ${postElements.length} potential post elements in current view.`);
 
@@ -245,8 +277,6 @@ Actor.main(async () => {
                         const getText = (selector) => el.querySelector(selector)?.innerText.trim();
                         const getAttribute = (selector, attr) => el.querySelector(selector)?.getAttribute(attr);
 
-                        // These selectors are highly dependent on LinkedIn's current HTML structure
-                        // It is CRITICAL to inspect the page and update these if they break.
                         const authorName = getText('span.feed-shared-actor__name > span[aria-hidden="true"]') || getText('span.actor-name');
                         const authorProfileUrl = getAttribute('a.feed-shared-actor__meta-link', 'href') || getAttribute('a.actor-link', 'href');
                         const postContentElement = el.querySelector('div.feed-shared-update-v2__description-wrapper span.break-words, div.update-components-text span.text-view-model, .feed-shared-text');
@@ -256,7 +286,7 @@ Actor.main(async () => {
                         if (timestampStr && timestampStr.includes('•')) { 
                              timestampStr = Array.from(el.querySelectorAll('span[aria-hidden="true"]')).find(s => s.innerText.match(/\d+(h|d|w|mo|yr|s|m|j|sem|an|mois|heure)|ago|maintenant|hier/i))?.innerText.trim();
                         }
-                        if (!timestampStr) { // Fallback for different timestamp structure
+                        if (!timestampStr) {
                             timestampStr = getText('.update-components-actor__sub-description > div > span[aria-hidden="true"]')
                         }
 
@@ -267,26 +297,24 @@ Actor.main(async () => {
                             authorName,
                             authorProfileUrl: authorProfileUrl ? (authorProfileUrl.startsWith('http') ? authorProfileUrl : `https://www.linkedin.com${authorProfileUrl}`) : null,
                             postContent,
-                            timestamp: timestampStr, // Will be parsed later
+                            timestamp: timestampStr,
                             likesCount: likesCountText ? parseInt(likesCountText.match(/\d+/)?.[0] || '0') : 0,
                             commentsCount: commentsCountText ? parseInt(commentsCountText.match(/\d+/)?.[0] || '0') : 0,
-                            postUrl: window.location.href // This might not be specific enough for individual posts if not on a permalink
+                            postUrl: window.location.href
                         };
                     });
                 } catch(evalError) {
                     console.debug(`[DEBUG] Error evaluating post element: ${evalError.message}`);
-                    continue; // Skip this element if basic evaluation fails
+                    continue;
                 }
 
-
-                if (!postData.postContent && !postData.authorName && !(postData.media && (postData.media.images.length > 0 || postData.media.videos.length > 0)) ) { // Skip empty/invalid entries unless there's media
+                if (!postData.postContent && !postData.authorName && !(postData.media && (postData.media.images.length > 0 || postData.media.videos.length > 0))) {
                     console.debug('[DEBUG] Skipping post element, no content, author, or media found.');
                     continue;
                 }
 
                 postData.parsedDate = parseLinkedInDate(postData.timestamp);
 
-                // Filter by date
                 if (dateFrom && postData.parsedDate && postData.parsedDate.isBefore(dateFrom)) {
                     console.log(`[INFO] Skipping post by ${postData.authorName} from ${postData.parsedDate ? postData.parsedDate.format('YYYY-MM-DD') : 'unknown date'} (before dateFrom ${dateFrom.format('YYYY-MM-DD')}).`);
                     continue;
@@ -296,7 +324,6 @@ Actor.main(async () => {
                     continue;
                 }
                 
-                // Deduplication check - ensure a unique ID or better content hash if possible
                 const uniquePostId = postData.authorName + ':' + (postData.postContent ? postData.postContent.slice(0,100) : 'NOCONTENT') + ':' + postData.timestamp;
                 if (postsCollected.some(p => p.uniquePostId === uniquePostId)) {
                      console.debug(`[DEBUG] Skipping duplicate post by ${postData.authorName} with timestamp ${postData.timestamp}`);
@@ -313,17 +340,15 @@ Actor.main(async () => {
                 
                 console.log(`[INFO] Collected post by: ${postData.authorName} | Date: ${postData.parsedDate ? postData.parsedDate.format('YYYY-MM-DD HH:mm') : postData.timestamp} | Content snippet: ${postData.postContent ? postData.postContent.substring(0, 50) + '...' : 'N/A'}`);
                 postsCollected.push(postData);
-                await Actor.pushData(postData); // Push data as it's collected
+                await Actor.pushData(postData);
             }
 
-            if (postsCollected.length === initialPostCount && postElements.length > 0) { // Only increment streak if we had elements to process but none were new
+            if (postsCollected.length === initialPostCount && postElements.length > 0) {
                 noNewPostsStreak++;
                 console.log(`[INFO] No new valid posts found in this scroll. Streak: ${noNewPostsStreak}`);
             } else if (postsCollected.length > initialPostCount) {
-                noNewPostsStreak = 0; // Reset streak if new posts were found and added
+                noNewPostsStreak = 0;
             }
-            // If postElements.length is 0, it means we might have reached the end or an empty section, 
-            // but it doesn't necessarily mean no *new* posts if previous scrolls also yielded 0. Handled by streak.
 
             if ((maxPosts !== null && postsCollected.length >= maxPosts) || noNewPostsStreak >= 5) {
                  if (noNewPostsStreak >= 5) console.log('[INFO] Reached maximum noNewPostsStreak, stopping scroll.');
@@ -334,18 +359,17 @@ Actor.main(async () => {
             console.log('[INFO] Scrolling down...');
             await page.evaluate('window.scrollTo(0, document.body.scrollHeight)');
             try {
-                // Wait for a bit more dynamic time for content to potentially load after scroll
                 await page.waitForTimeout(3500 + Math.random() * 2500);
-                // Check if scroll height actually changed, or if new content appeared (more robust)
-                // This waitForFunction can be tricky. A simpler approach might be to check for new elements if scroll height doesn't change.
-                 await page.waitForFunction(
+                await page.waitForFunction(
                     (currentHeight, previousPostsCount, postSelector) => {
                         const newHeight = document.body.scrollHeight;
                         const newPosts = document.querySelectorAll(postSelector).length;
                         return newHeight > currentHeight || newPosts > previousPostsCount;
                     },
-                    { timeout: 15000 }, // Increased timeout for waiting for new content or scroll height change
-                    lastHeight, postElements.length, '.scaffold-finite-scroll__content > div > div'
+                    { timeout: 15000 },
+                    lastHeight,
+                    postElements.length,
+                    '.scaffold-finite-scroll__content > div > div'
                 ).catch(() => {
                     console.warn('[WARN] Scroll height/content did not change significantly after scroll, or timeout waiting for it. May be end of page.');
                 });
@@ -356,20 +380,17 @@ Actor.main(async () => {
         }
 
         console.log(`[INFO] Finished scraping. Total posts collected: ${postsCollected.length}`);
-        // Data is pushed incrementally, but a final summary log is good.
-        // await Actor.pushData(postsCollected); // Already pushing data incrementally
 
     } catch (error) {
         console.error(`[ERROR] Scraping failed: ${error.message}. Stack: ${error.stack}`);
         await Actor.setValue('RUN_ERROR_MESSAGE', error.message);
         await Actor.setValue('RUN_ERROR_STACK', error.stack);
         
-        // Try to save context if browser is still available
         if (browser) {
             try {
-                const page = (await browser.pages())[0]; // Get current page if exists
-                if (page) { // Check if page exists
-                    await Actor.setValue('GENERAL_ERROR_SCREENSHOT', await page.screenshot({ fullPage: true }), { contentType: 'image/png' });
+                const page = (await browser.pages())[0];
+                if (page) {
+                    await safeScreenshot(page, 'GENERAL_ERROR_SCREENSHOT');
                     await Actor.setValue('GENERAL_ERROR_HTML', await page.content(), { contentType: 'text/html' });
                     console.log('[INFO] General error page HTML and screenshot saved to Key-Value Store.');
                 }
@@ -377,7 +398,7 @@ Actor.main(async () => {
                 console.error(`[ERROR] Could not save error context: ${saveError.message}`);
             }
         }
-        throw error; // Re-throw to ensure Apify platform marks run as failed.
+        throw error;
     } finally {
         if (browser) {
             console.log('[INFO] Closing browser...');
