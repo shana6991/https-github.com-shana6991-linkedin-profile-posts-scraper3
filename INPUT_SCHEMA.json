@@ -1,85 +1,52 @@
 {
-    "title": "LinkedIn Profile Posts Scraper",
-    "description": "Scrapes posts from LinkedIn profiles using Puppeteer, with robust proxy handling.",
+    "title": "LinkedIn Profile Posts Scraper Input",
     "type": "object",
     "schemaVersion": 1,
     "properties": {
-        "username": {
-            "title": "LinkedIn Username",
+        "linkedinProfileUrl": {
+            "title": "LinkedIn Profile URL",
             "type": "string",
-            "description": "Your LinkedIn account username/email.",
+            "description": "URL of the LinkedIn profile to scrape, e.g., https://www.linkedin.com/in/username/",
             "editor": "textfield"
+        },
+        "email": {
+            "title": "LinkedIn Email",
+            "type": "string",
+            "description": "Your LinkedIn login email. Kept secure.",
+            "editor": "textfield",
+            "isSecret": true
         },
         "password": {
             "title": "LinkedIn Password",
             "type": "string",
-            "description": "Your LinkedIn account password.",
+            "description": "Your LinkedIn login password. Kept secure.",
             "editor": "textfield",
             "isSecret": true
         },
-        "profileUrls": {
-            "title": "Profile URLs",
-            "type": "array",
-            "description": "List of LinkedIn profile URLs to scrape.",
-            "editor": "stringList",
-            "uniqueItems": true,
-            "minItems": 1
-        },
-        "maxPosts": {
-            "title": "Maximum Posts per Profile",
-            "type": "integer",
-            "description": "Maximum number of posts to scrape per profile (0 for unlimited).",
-            "minimum": 0,
-            "default": 10,
-            "nullable": true
-        },
         "proxyConfiguration": {
-            "title": "Proxy configuration",
+            "title": "Proxy Configuration",
             "type": "object",
-            "description": "Select proxy type. Using Apify Residential or Datacenter proxies is STRONGLY RECOMMENDED to avoid LinkedIn blocks. Ensure your Apify account has access to the selected proxy type.",
+            "description": "Select proxy type. RESIDENTIAL proxies are recommended for LinkedIn. The actor will test this configuration and fall back if it fails.",
             "editor": "proxy",
             "prefill": {
                 "useApifyProxy": true,
                 "apifyProxyGroups": ["RESIDENTIAL"]
             }
         },
-        "includeComments": {
-            "title": "Include Comments",
-            "type": "boolean",
-            "description": "Whether to scrape comments for each post (Feature not fully implemented yet).",
-            "editor": "checkbox",
-            "default": false
-        },
-        "maxCommentsPerPost": {
-            "title": "Maximum Comments per Post",
+        "maxPosts": {
+            "title": "Maximum Posts to Scrape",
             "type": "integer",
-            "description": "Maximum number of comments to scrape per post (if comments are enabled).",
+            "description": "Maximum number of posts to scrape. Leave empty for all posts (may take a long time).",
             "editor": "number",
-            "default": 10,
-            "minimum": 1,
-            "maximum": 100
+            "default": 20
         },
-        "dateFrom": {
-            "title": "Start Date (Optional)",
-            "type": "string",
-            "description": "Only include posts from this date (format: YYYY-MM-DD).",
-            "editor": "textfield",
-            "nullable": true
-        },
-        "dateTo": {
-            "title": "End Date (Optional)",
-            "type": "string",
-            "description": "Only include posts until this date (format: YYYY-MM-DD).",
-            "editor": "textfield",
-            "nullable": true
-        },
-        "includeMedia": {
-            "title": "Include Media URLs (Optional)",
+        "debugLog": {
+            "title": "Enable Debug Log",
             "type": "boolean",
-            "description": "Whether to extract media URLs (images, videos) from posts (Feature not fully implemented yet).",
+            "description": "Enable detailed debug logging in the actor log.",
             "editor": "checkbox",
             "default": false
         }
     },
-    "required": ["username", "password", "profileUrls", "proxyConfiguration"]
+    "required": ["linkedinProfileUrl", "email", "password", "proxyConfiguration"]
 }
