@@ -4,10 +4,11 @@
     "description": "Scrapes posts from LinkedIn profiles with robust proxy handling and authwall detection.",
     "type": "module",
     "dependencies": {
-        "apify": "^3.0.0"
+        "apify": "^3.0.0",
+        "crawlee": "^3.0.0"
     },
     "scripts": {
-        "start": "apify run",
+        "start": "node main.js",
         "test": "echo \"Error: no test specified\" && exit 1"
     },
     "author": "Your Name/AI",
