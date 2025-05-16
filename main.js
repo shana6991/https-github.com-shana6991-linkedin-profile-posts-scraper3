@@ -1,4 +1,4 @@
-const Apify = require('apify');
+const { Actor } = require('apify');
 const moment = require('moment');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
@@ -6,8 +6,11 @@ const ProxyChain = require('proxy-chain');
 
 puppeteer.use(StealthPlugin());
 
-Apify.main(async () => {
-    const input = await Apify.getInput();
+// Initialize the actor
+Actor.init();
+
+async function scrapeLinkedIn() {
+    const input = await Actor.getInput();
     const { 
         username,
         password,
@@ -156,7 +159,7 @@ Apify.main(async () => {
         }
 
         // Save the results
-        await Apify.pushData(posts);
+        await Actor.pushData(posts);
         console.log(`Successfully scraped ${posts.length} total posts`);
         
     } catch (error) {
@@ -174,4 +177,7 @@ Apify.main(async () => {
     } finally {
         await browser.close();
     }
-});
+}
+
+// Run the actor
+Actor.main(scrapeLinkedIn);
