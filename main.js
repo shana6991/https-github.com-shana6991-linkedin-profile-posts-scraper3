@@ -16,7 +16,7 @@ async function scrapeLinkedIn() {
     console.log('scrapeLinkedIn function started.'); 
     let browser = null;
     let page = null;
-    let proxyUrl = null;
+    let proxyConfiguration = null;
 
     try {
         const input = await Actor.getInput();
@@ -27,7 +27,7 @@ async function scrapeLinkedIn() {
             username,
             profileUrls,
             maxPosts = 0,
-            useProxy = false
+            useProxy = true // Default to true
         } = input;
 
         if (!profileUrls || !Array.isArray(profileUrls) || profileUrls.length === 0) {
@@ -35,8 +35,8 @@ async function scrapeLinkedIn() {
             return; 
         }
 
-        // Setup proxy if enabled
-        let launchOptions = {
+        // Setup launcher options
+        const launchOptions = {
             headless: "new",
             args: [
                 '--no-sandbox',
@@ -44,29 +44,41 @@ async function scrapeLinkedIn() {
                 '--window-size=1920,1080',
                 '--disable-dev-shm-usage',
                 '--disable-accelerated-2d-canvas',
-                '--disable-gpu'
+                '--disable-gpu',
+                '--disable-web-security',
+                '--disable-features=IsolateOrigins,site-per-process',
+                '--disable-site-isolation-trials'
             ]
         };
 
+        // Setup proxy if enabled
         if (useProxy) {
             console.log('Proxy usage enabled. Setting up Apify Proxy...');
             
-            // Get proxy URL from Apify
-            proxyUrl = await Actor.createProxyConfiguration();
-            
-            if (proxyUrl) {
-                console.log('Apify Proxy obtained successfully.');
+            try {
+                // Create proxy configuration
+                proxyConfiguration = await Actor.createProxyConfiguration({
+                    groups: ['RESIDENTIAL'],  // Use residential proxies for better results
+                    countryCode: 'US',        // Using US IPs for LinkedIn
+                });
                 
-                // Add proxy to browser launch options
-                launchOptions.proxyServer = proxyUrl.newUrl();
-                
-                console.log('Browser configured to use Apify Proxy.');
-            } else {
-                console.warn('Failed to obtain Apify Proxy. Continuing without proxy.');
+                if (proxyConfiguration) {
+                    const proxyUrl = await proxyConfiguration.newUrl();
+                    console.log('Apify Proxy obtained successfully:', proxyUrl);
+                    
+                    // Set the proxy to puppeteer launch options
+                    launchOptions.args.push(`--proxy-server=${proxyUrl}`);
+                    console.log('Browser configured to use Apify Proxy.');
+                } else {
+                    console.warn('Failed to obtain Apify Proxy. Continuing without proxy.');
+                }
+            } catch (proxyError) {
+                console.error('Error setting up proxy:', proxyError.message);
+                console.warn('Continuing without proxy.');
             }
         }
 
-        console.log('Launching browser...');
+        console.log('Launching browser with options:', launchOptions);
         browser = await puppeteer.launch(launchOptions);
         console.log('Browser launched.');
 
@@ -80,9 +92,24 @@ async function scrapeLinkedIn() {
         });
         console.log('Viewport set.');
 
-        // Set a more realistic user agent
+        // Set a realistic user agent for a premium browser profile
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
         console.log('User agent set to mimic Chrome on Windows.');
+
+        // Additional headers to be more browser-like
+        await page.setExtraHTTPHeaders({
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'sec-ch-ua': '"Not=A?Brand";v="99", "Chromium";v="124"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
+            'sec-fetch-dest': 'document',
+            'sec-fetch-mode': 'navigate',
+            'sec-fetch-site': 'same-origin',
+            'sec-fetch-user': '?1',
+            'upgrade-insecure-requests': '1'
+        });
+        console.log('Extra HTTP headers set to mimic real browser behavior.');
 
         await page.setRequestInterception(true);
         page.on('request', (request) => {
@@ -94,8 +121,8 @@ async function scrapeLinkedIn() {
         });
         console.log('Request interception set up.');
 
-        page.setDefaultNavigationTimeout(100000);
-        page.setDefaultTimeout(60000);
+        page.setDefaultNavigationTimeout(120000); // Increased timeout for slow proxy
+        page.setDefaultTimeout(90000);
         console.log('Default timeouts set.');
 
         console.log('Logging in to LinkedIn...');
@@ -108,6 +135,14 @@ async function scrapeLinkedIn() {
                     waitUntil: ['networkidle2', 'domcontentloaded'],
                     timeout: 90000
                 });
+                
+                // Check if we're already on a different page (maybe already logged in)
+                const currentUrl = page.url();
+                if (!currentUrl.includes('linkedin.com/login')) {
+                    console.log(`Redirected to ${currentUrl} instead of login page. Might already be logged in.`);
+                    break;
+                }
+                
                 console.log('Login page navigation successful.');
                 break;
             } catch (error) {
@@ -121,34 +156,50 @@ async function scrapeLinkedIn() {
             }
         }
 
-        const usernameSelector = '#username';
-        const passwordSelector = '#password';
-        
-        console.log('Waiting for username and password fields...');
-        await page.waitForSelector(usernameSelector, { timeout: 60000 });
-        await page.waitForSelector(passwordSelector, { timeout: 60000 });
-        console.log('Username and password fields found.');
+        // Check if login form is present
+        const loginFormExists = await page.evaluate(() => {
+            return !!document.querySelector('#username') && !!document.querySelector('#password');
+        });
 
-        await page.type(usernameSelector, input.username);
-        await page.type(passwordSelector, input.password);
-        console.log('Credentials typed in.');
+        if (loginFormExists) {
+            console.log('Login form detected. Proceeding with login.');
+            const usernameSelector = '#username';
+            const passwordSelector = '#password';
+            
+            console.log('Waiting for username and password fields...');
+            await page.waitForSelector(usernameSelector, { timeout: 60000 });
+            await page.waitForSelector(passwordSelector, { timeout: 60000 });
+            console.log('Username and password fields found.');
+
+            // Add random delays to simulate human typing
+            await page.type(usernameSelector, input.username, { delay: Math.floor(Math.random() * 150) + 50 });
+            await new Promise(r => setTimeout(r, Math.floor(Math.random() * 1000) + 500));
+            await page.type(passwordSelector, input.password, { delay: Math.floor(Math.random() * 100) + 30 });
+            console.log('Credentials typed in with human-like delays.');
+            
+            // Small delay before clicking login
+            await new Promise(r => setTimeout(r, Math.floor(Math.random() * 1000) + 500));
+            
+            console.log('Clicking login button and waiting for navigation...');
+            await Promise.all([
+                page.click('button[type="submit"]'),
+                page.waitForNavigation({ 
+                    waitUntil: ['networkidle2', 'domcontentloaded'],
+                    timeout: 90000 
+                })
+            ]);
+        } else {
+            console.log('Login form not detected. Might already be logged in or facing a different page.');
+        }
         
-        console.log('Clicking login button and waiting for navigation...');
-        await Promise.all([
-            page.click('button[type="submit"]'),
-            page.waitForNavigation({ 
-                waitUntil: ['networkidle2', 'domcontentloaded'],
-                timeout: 90000 
-            })
-        ]);
-        console.log('Login successful, navigation complete.');
+        console.log('Login flow completed, current URL:', page.url());
 
         // Store cookies after login for potential reuse
         const cookies = await page.cookies();
         console.log(`Stored ${cookies.length} cookies after login.`);
         
-        // Add a small delay to stabilize the session
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        // Add a longer delay to stabilize the session
+        await new Promise(resolve => setTimeout(resolve, 5000));
 
         const posts = [];
         for (const profileUrl of profileUrls) {
@@ -161,9 +212,9 @@ async function scrapeLinkedIn() {
                         console.log(`Navigating to profile ${profileUrl} (attempt ${4 - retries}/3)...`);
                         await page.goto(profileUrl, {
                             waitUntil: ['networkidle2', 'domcontentloaded'],
-                            timeout: 90000
+                            timeout: 120000  // Extended timeout for proxies
                         });
-                        console.log(`Navigation to profile ${profileUrl} successful.`);
+                        console.log(`Navigation to profile ${profileUrl} successful. Current URL: ${page.url()}`);
                         break;
                     } catch (error) {
                         console.warn(`Profile navigation attempt ${4 - retries}/3 for ${profileUrl} failed: ${error.message}`);
@@ -177,7 +228,7 @@ async function scrapeLinkedIn() {
                 }
 
                 // Add a delay after navigation to give page time to fully load
-                await new Promise(resolve => setTimeout(resolve, 5000));
+                await new Promise(resolve => setTimeout(resolve, 7000));
 
                 // Check for login/join page
                 console.log(`Page URL before attempting to find selectors on ${profileUrl}: ${page.url()}`);
@@ -209,6 +260,49 @@ async function scrapeLinkedIn() {
                     fs.unlinkSync(loginScreenshotPath); 
 
                     throw new Error(`Redirected to a login/join page at ${profileUrl} when profile content was expected. Aborting scrape for this profile.`);
+                }
+
+                // Try to manually click any "Sign in" buttons if they exist
+                try {
+                    const hasSignInButton = await page.evaluate(() => {
+                        const signInButton = document.querySelector('a[data-tracking-control-name="auth_wall_desktop_profile-signin-button"]');
+                        if (signInButton) {
+                            signInButton.click();
+                            return true;
+                        }
+                        return false;
+                    });
+                    
+                    if (hasSignInButton) {
+                        console.log('Found and clicked "Sign In" button on auth wall.');
+                        await page.waitForNavigation({ timeout: 30000 });
+                        
+                        // Now check for login form and perform login again if needed
+                        const loginFormAppeared = await page.evaluate(() => {
+                            return !!document.querySelector('#username') && !!document.querySelector('#password');
+                        });
+                        
+                        if (loginFormAppeared) {
+                            console.log('Login form appeared after clicking Sign In. Logging in again...');
+                            await page.type('#username', input.username, { delay: 100 });
+                            await page.type('#password', input.password, { delay: 100 });
+                            await Promise.all([
+                                page.click('button[type="submit"]'),
+                                page.waitForNavigation({ timeout: 60000 })
+                            ]);
+                            console.log('Logged in again after auth wall. Current URL:', page.url());
+                            
+                            // Navigate back to profile
+                            await page.goto(profileUrl, { 
+                                waitUntil: ['networkidle2', 'domcontentloaded'],
+                                timeout: 60000 
+                            });
+                            console.log('Navigated back to profile after login. Current URL:', page.url());
+                        }
+                    }
+                } catch (authWallError) {
+                    console.warn('Error handling auth wall:', authWallError.message);
+                    // Continue anyway
                 }
                 
                 console.log(`Waiting for profile main content on ${profileUrl}...`);
@@ -254,7 +348,8 @@ async function scrapeLinkedIn() {
                     'a[href*="detail/recent-activity/shares"]',
                     'a[href*="detail/recent-activity/posts"]',
                     'a[href*="recent-activity/all"]',
-                    'a[data-test-id="activity-section"]' 
+                    'a[data-test-id="activity-section"]',
+                    'a[data-control-name="recent_activity_details_all"]' 
                 ];
 
                 let activityButton = null;
