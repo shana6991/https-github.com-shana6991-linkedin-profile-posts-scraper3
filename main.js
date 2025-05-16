@@ -3,7 +3,7 @@ const moment = require('moment');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const ProxyChain = require('proxy-chain');
-const fs = require('fs'); // Added fs import
+const fs = require('fs');
 
 puppeteer.use(StealthPlugin());
 
@@ -16,6 +16,7 @@ async function scrapeLinkedIn() {
     console.log('scrapeLinkedIn function started.'); 
     let browser = null;
     let page = null;
+    let proxyUrl = null;
 
     try {
         const input = await Actor.getInput();
@@ -34,8 +35,8 @@ async function scrapeLinkedIn() {
             return; 
         }
 
-        console.log('Launching browser...');
-        browser = await puppeteer.launch({
+        // Setup proxy if enabled
+        let launchOptions = {
             headless: "new",
             args: [
                 '--no-sandbox',
@@ -45,7 +46,28 @@ async function scrapeLinkedIn() {
                 '--disable-accelerated-2d-canvas',
                 '--disable-gpu'
             ]
-        });
+        };
+
+        if (useProxy) {
+            console.log('Proxy usage enabled. Setting up Apify Proxy...');
+            
+            // Get proxy URL from Apify
+            proxyUrl = await Actor.createProxyConfiguration();
+            
+            if (proxyUrl) {
+                console.log('Apify Proxy obtained successfully.');
+                
+                // Add proxy to browser launch options
+                launchOptions.proxyServer = proxyUrl.newUrl();
+                
+                console.log('Browser configured to use Apify Proxy.');
+            } else {
+                console.warn('Failed to obtain Apify Proxy. Continuing without proxy.');
+            }
+        }
+
+        console.log('Launching browser...');
+        browser = await puppeteer.launch(launchOptions);
         console.log('Browser launched.');
 
         page = await browser.newPage();
@@ -57,6 +79,10 @@ async function scrapeLinkedIn() {
             deviceScaleFactor: 1,
         });
         console.log('Viewport set.');
+
+        // Set a more realistic user agent
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
+        console.log('User agent set to mimic Chrome on Windows.');
 
         await page.setRequestInterception(true);
         page.on('request', (request) => {
@@ -117,6 +143,13 @@ async function scrapeLinkedIn() {
         ]);
         console.log('Login successful, navigation complete.');
 
+        // Store cookies after login for potential reuse
+        const cookies = await page.cookies();
+        console.log(`Stored ${cookies.length} cookies after login.`);
+        
+        // Add a small delay to stabilize the session
+        await new Promise(resolve => setTimeout(resolve, 3000));
+
         const posts = [];
         for (const profileUrl of profileUrls) {
             console.log(`Scraping posts from ${profileUrl}`);
@@ -143,7 +176,10 @@ async function scrapeLinkedIn() {
                     }
                 }
 
-                // New block to check for login/join page
+                // Add a delay after navigation to give page time to fully load
+                await new Promise(resolve => setTimeout(resolve, 5000));
+
+                // Check for login/join page
                 console.log(`Page URL before attempting to find selectors on ${profileUrl}: ${page.url()}`);
                 const isLikelyLoginPage = await page.evaluate(() => {
                     return !!(
@@ -153,7 +189,11 @@ async function scrapeLinkedIn() {
                         document.querySelector('a[data-tracking-control-name="auth_wall_desktop_profile_guest_nav_login-button"]') ||
                         document.querySelector('h1[data-test-id="authwall-join-form__title"]') ||
                         document.body.innerText.includes('Sign in to LinkedIn') ||
-                        document.body.innerText.includes('Join LinkedIn')
+                        document.body.innerText.includes('Join LinkedIn') ||
+                        document.querySelector('.authwall-join-form') ||
+                        document.querySelector('.authwall-login-form') ||
+                        window.location.href.includes('authwall') ||
+                        document.querySelector('[data-test-id="signup-modal"]')
                     );
                 });
 
@@ -170,7 +210,6 @@ async function scrapeLinkedIn() {
 
                     throw new Error(`Redirected to a login/join page at ${profileUrl} when profile content was expected. Aborting scrape for this profile.`);
                 }
-                // End of new block
                 
                 console.log(`Waiting for profile main content on ${profileUrl}...`);
                 const profileMainSelector = 'main[role="main"]';
