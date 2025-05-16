@@ -18,8 +18,6 @@ function customLog(level, message, extra) {
 // --- Proxy Testing Utility ---
 async function testAndGetWorkingProxyConfiguration(userInputProxyConfig) {
     const proxyTestAttempts = [];
-
-    // 1. Try user-defined Apify proxy from input
     if (userInputProxyConfig && userInputProxyConfig.useApifyProxy && userInputProxyConfig.apifyProxyGroups) {
         proxyTestAttempts.push({
             options: {
@@ -29,14 +27,10 @@ async function testAndGetWorkingProxyConfiguration(userInputProxyConfig) {
             label: 'User-defined Apify Proxy',
         });
     }
-
-    // 2. Fallback to RESIDENTIAL
     proxyTestAttempts.push({
         options: { groups: ['RESIDENTIAL'] },
         label: 'Apify RESIDENTIAL (Fallback)',
     });
-
-    // 3. Fallback to DATACENTER
     proxyTestAttempts.push({
         options: { groups: ['DATACENTER'] },
         label: 'Apify DATACENTER (Fallback)',
@@ -46,30 +40,26 @@ async function testAndGetWorkingProxyConfiguration(userInputProxyConfig) {
         customLog('info', `[ProxySetup] Attempting to test proxy: ${attempt.label}`, attempt.options);
         let browser = null;
         try {
-            // Directly pass Crawlee-compatible options to ProxyConfiguration constructor
             const tempProxyConfig = new ProxyConfiguration(attempt.options);
-            const proxyUrl = await tempProxyConfig.newUrl(); // Get a URL for testing
+            const proxyUrl = await tempProxyConfig.newUrl();
             if (!proxyUrl) {
                 customLog('warning', `[ProxySetup] Could not get a proxy URL for ${attempt.label}.`);
                 continue;
             }
             customLog('debug', `[ProxySetup] Testing with proxy URL from ${attempt.label}`);
-
-            browser = await Actor.launchPuppeteer({ // Use Actor.launchPuppeteer for consistency
+            browser = await Actor.launchPuppeteer({
                 proxyUrl,
                 launchOptions: {
                     headless: true,
                     args: ['--no-sandbox', '--disable-setuid-sandbox'],
-                    timeout: 45000, // Shorter timeout for proxy test
+                    timeout: 45000,
                 },
-                useChrome: Actor.isAtHome(), // Use Chrome on Apify platform
+                useChrome: Actor.isAtHome(),
             });
-
             const page = await browser.newPage();
             await page.setUserAgent(DEFAULT_USER_AGENT);
             customLog('debug', `[ProxySetup] Navigating to ${PROXY_TEST_URL} for proxy test (${attempt.label}).`);
             const response = await page.goto(PROXY_TEST_URL, { timeout: 30000 });
-
             if (!response || !response.ok()) {
                 throw new Error(`Proxy test navigation failed with status: ${response ? response.status() : 'unknown'}`);
             }
@@ -79,16 +69,15 @@ async function testAndGetWorkingProxyConfiguration(userInputProxyConfig) {
             }
             customLog('info', `[ProxySetup] Proxy test successful for ${attempt.label}. IP via proxy: ${browserInfo.clientIp}`);
             await browser.close();
-            return { proxyConfiguration: tempProxyConfig, label: attempt.label }; // Return the Crawlee ProxyConfiguration object
+            return { proxyConfiguration: tempProxyConfig, label: attempt.label };
         } catch (e) {
             customLog('warning', `[ProxySetup] Proxy test failed for ${attempt.label}: ${e.message}`);
             if (browser) await browser.close();
         }
     }
     customLog('warning', '[ProxySetup] All proxy configurations failed the test.');
-    return null; // No working Apify Proxy configuration found
+    return null;
 }
-
 
 // --- Authwall Detection Utility ---
 async function checkForAuthwall(page, contextMessage) {
@@ -104,8 +93,8 @@ async function checkForAuthwall(page, contextMessage) {
 }
 
 // --- AutoScroll Utility ---
-async function autoScroll(page, stopConditionCallback) {
-    await page.evaluate(async (stopCbStr) => {
+async function autoScroll(page) {
+    await page.evaluate(async () => {
         await new Promise((resolve) => {
             let totalHeight = 0;
             const distance = 100;
@@ -122,11 +111,10 @@ async function autoScroll(page, stopConditionCallback) {
     }); 
 }
 
-
 Actor.main(async () => {
     const input = await Actor.getInput();
     const {
-        linkedinProfileUrl,
+        linkedinProfileUrl, // This is the base profile URL from input
         email,
         password,
         proxyConfiguration: userProxyInput,
@@ -145,7 +133,6 @@ Actor.main(async () => {
     customLog('info', 'Actor starting...', { linkedinProfileUrl, maxPosts, debugLogEnabled });
 
     const proxyInfo = await testAndGetWorkingProxyConfiguration(userProxyInput);
-    // Critical change: Use undefined if proxyInfo is null, as PuppeteerCrawler expects ProxyConfiguration | undefined
     const finalProxyConfiguration = proxyInfo ? proxyInfo.proxyConfiguration : undefined;
     let proxyUsedLabel = proxyInfo ? proxyInfo.label : "No Proxy (All tests failed or no proxy used)";
 
@@ -156,7 +143,7 @@ Actor.main(async () => {
     }
 
     const crawler = new PuppeteerCrawler({
-        proxyConfiguration: finalProxyConfiguration, // This can now be undefined
+        proxyConfiguration: finalProxyConfiguration,
         launchContext: {
             launchOptions: {
                 headless: Actor.isAtHome() ? 'new' : false,
@@ -169,30 +156,26 @@ Actor.main(async () => {
             userAgent: DEFAULT_USER_AGENT,
             useChrome: Actor.isAtHome(),
         },
-        browserPoolOptions: {
-            maxOpenPagesPerBrowser: 1,
-        },
+        browserPoolOptions: { maxOpenPagesPerBrowser: 1 },
         minConcurrency: 1,
         maxConcurrency: 1,
         navigationTimeoutSecs: 120,
         requestHandlerTimeoutSecs: 180,
 
         requestHandler: async ({ page, request, log }) => {
-            log.info(`Processing ${request.url}...`);
+            // request.url here is the initial URL passed to crawler.run(), which is linkedinProfileUrl
+            log.info(`Processing base profile URL: ${request.url} to derive activity feed.`);
 
             try {
                 log.info('Attempting to log in to LinkedIn...');
                 await page.goto(LINKEDIN_LOGIN_URL, { waitUntil: 'networkidle2', timeout: 90000 });
                 await checkForAuthwall(page, 'LinkedIn Login Page');
-
                 await page.waitForSelector('#username', { timeout: 45000 });
                 await page.type('#username', email, { delay: 120 + Math.random() * 80 });
                 await page.waitForSelector('#password', { timeout: 45000 });
                 await page.type('#password', password, { delay: 110 + Math.random() * 90 });
-
                 log.debug('Credentials entered. Clicking login button.');
                 await page.click('button[type="submit"]', { delay: 150 + Math.random() * 100 });
-
                 log.debug('Waiting for navigation after login attempt...');
                 try {
                     await page.waitForFunction(
@@ -207,9 +190,7 @@ Actor.main(async () => {
                     log.warning(`Timeout or error waiting for post-login element/URL: ${e.message}`);
                     await Actor.setValue('LOGIN_NAVIGATION_FAILURE_SCREENSHOT', await page.screenshot({ fullPage: true, type: 'jpeg', quality: 75 }), { contentType: 'image/jpeg' });
                 }
-
                 await checkForAuthwall(page, 'After Login Attempt');
-
                 if (page.url().includes('/feed/')) {
                     log.info('Successfully logged in to LinkedIn. Current URL: ' + page.url());
                 } else if (page.url().includes('/login') || page.url().includes('session_redirect') || await page.$('form#login-form')) {
@@ -224,46 +205,49 @@ Actor.main(async () => {
                 throw e;
             }
 
-            log.info(`Navigating to profile: ${request.loadedUrl}`);
+            // Construct and navigate to the activity feed URL
+            let baseProfileUrl = request.url; // request.url is the linkedinProfileUrl from input
+            if (baseProfileUrl.endsWith('/')) {
+                baseProfileUrl = baseProfileUrl.slice(0, -1);
+            }
+            const activityFeedUrl = `${baseProfileUrl}/recent-activity/all/`;
+            log.info(`Navigating to activity feed: ${activityFeedUrl}`);
+
             try {
-                await page.goto(request.loadedUrl, { waitUntil: 'networkidle2', timeout: 90000 });
-                await checkForAuthwall(page, 'Profile Page Load');
-                await page.waitForSelector('h1.text-heading-xlarge', { timeout: 45000 });
-                log.info('Successfully navigated to profile page.');
+                await page.goto(activityFeedUrl, { waitUntil: 'networkidle2', timeout: 90000 });
+                await checkForAuthwall(page, 'Activity Feed Page Load');
+                // Wait for a key element on the activity feed page to ensure it's loaded
+                // The main content area selector should still be valid
+                await page.waitForSelector('main.scaffold-layout__main', { timeout: 60000 });
+                log.info('Successfully navigated to activity feed page.');
             } catch (e) {
-                log.error(`Error navigating to profile page ${request.loadedUrl}: ${e.message}`, { stack: e.stack });
+                log.error(`Error navigating to activity feed page ${activityFeedUrl}: ${e.message}`, { stack: e.stack });
                 throw e;
             }
 
-            log.info('Attempting to scrape posts...');
+            log.info('Attempting to scrape posts from activity feed...');
             let postsScrapedCount = 0;
             try {
-                const postsFeedSelector = 'main.scaffold-layout__main';
-                await page.waitForSelector(postsFeedSelector, { timeout: 45000 });
-
+                const postsFeedContainerSelector = 'main.scaffold-layout__main';
+                await page.waitForSelector(postsFeedContainerSelector, { timeout: 45000 });
                 let lastHeight = await page.evaluate(() => document.body.scrollHeight);
                 let noNewPostsStreak = 0;
                 const MAX_NO_NEW_POSTS_STREAK = 3;
 
                 while (maxPosts === 0 || postsScrapedCount < maxPosts) {
-                    log.debug(`Scrolling to load more posts. Scraped so far: ${postsScrapedCount}/${maxPosts === 0 ? 'all' : maxPosts}`);
+                    log.debug(`Scrolling activity feed. Scraped so far: ${postsScrapedCount}/${maxPosts === 0 ? 'all' : maxPosts}`);
                     await autoScroll(page);
                     await page.waitForTimeout(5000 + Math.random() * 2000);
-
                     const postElements = await page.$$('div[data-urn^="urn:li:activity:"]');
-
                     if (postElements.length === 0 && postsScrapedCount === 0) {
-                        log.warning('No post elements found on the page with selector: div[data-urn^="urn:li:activity:"]. Ensure selectors are up to date or profile has posts.');
+                        log.warning('No post elements found on activity feed. Ensure selectors (div[data-urn^="urn:li:activity:"]) are up to date or profile has posts.');
                         break;
                     }
-
                     let newPostsInThisScroll = 0;
                     for (const postElement of postElements) {
                         if (maxPosts > 0 && postsScrapedCount >= maxPosts) break;
-
                         const isProcessed = await postElement.evaluate(el => el.getAttribute('data-scraped-by-actor'));
                         if (isProcessed) continue;
-
                         let postText = '';
                         try {
                             const textElement = await postElement.$('.feed-shared-update-v2__description .feed-shared-inline-show-more-text, .update-components-text.break-words');
@@ -275,7 +259,6 @@ Actor.main(async () => {
                         } catch (e) {
                             log.debug(`Could not extract text for a post: ${e.message}`);
                         }
-
                         let postTimestamp = '';
                         try {
                             const timeElement = await postElement.$('.update-components-text-view__timestamp');
@@ -287,16 +270,15 @@ Actor.main(async () => {
                         } catch (e) {
                             log.debug(`Could not extract timestamp for a post: ${e.message}`);
                         }
-                        
                         let actualPostContent = postText;
                         if (!actualPostContent) {
                              const genericContent = await postElement.$('.feed-shared-update-v2__commentary, .update-components-text');
                              if(genericContent) actualPostContent = await genericContent.evaluate(el => el.innerText.trim());
                         }
-
                         if (actualPostContent) {
                             await Actor.pushData({
-                                profileUrl: request.loadedUrl,
+                                profileUrl: baseProfileUrl, // Store original base profile URL
+                                activityFeedUrlScraped: activityFeedUrl,
                                 postText: actualPostContent,
                                 postTimestamp,
                                 likes: 'N/A (Selector TODO)',
@@ -309,15 +291,12 @@ Actor.main(async () => {
                             await postElement.evaluate(el => el.setAttribute('data-scraped-by-actor', 'true'));
                             log.debug(`Scraped post #${postsScrapedCount}: ${actualPostContent.substring(0, 70)}...`);
                         }
-
                         if (maxPosts > 0 && postsScrapedCount >= maxPosts) {
                             log.info(`Reached maxPosts limit of ${maxPosts}.`);
                             break;
                         }
                     }
-
                     if (maxPosts > 0 && postsScrapedCount >= maxPosts) break;
-
                     const currentHeight = await page.evaluate(() => document.body.scrollHeight);
                     if (newPostsInThisScroll === 0 && currentHeight === lastHeight) {
                         noNewPostsStreak++;
@@ -330,23 +309,20 @@ Actor.main(async () => {
                         noNewPostsStreak = 0;
                     }
                     lastHeight = currentHeight;
-
                     if (postElements.length === 0 && postsScrapedCount > 0) {
                         log.info('No more post elements found (div[data-urn^="urn:li:activity:"]). Assuming end of feed.');
                         break;
                     }
                 }
-                log.info(`Finished scraping for ${request.loadedUrl}. Total posts scraped: ${postsScrapedCount}`);
-
+                log.info(`Finished scraping from ${activityFeedUrl}. Total posts scraped: ${postsScrapedCount}`);
             } catch (e) {
-                log.error(`Error during post scraping on ${request.loadedUrl}: ${e.message}`, { stack: e.stack });
+                log.error(`Error during post scraping on ${activityFeedUrl}: ${e.message}`, { stack: e.stack });
                 throw e;
             }
         },
-
         failedRequestHandler: async ({ request, error, page, log }) => {
-            log.error(`Request ${request.url} failed: ${error.message}`, { stack: error.stack });
-            const safeUrl = request.url.replace(/[^a-zA-Z0-9]/g, '_');
+            log.error(`Request ${request.url} failed for ${request.loadedUrl} (derived activity page): ${error.message}`, { stack: error.stack });
+            const safeUrl = request.loadedUrl.replace(/[^a-zA-Z0-9]/g, '_'); // Use loadedUrl for error reporting consistency
             const timestamp = new Date().toISOString().replace(/:/g, '-');
             try {
                 if (page) {
@@ -354,12 +330,14 @@ Actor.main(async () => {
                      await Actor.setValue(`FAILED_REQUEST_HTML_${safeUrl}_${timestamp}.html`, await page.content(), { contentType: 'text/html' });
                 }
             } catch (screenShotError) {
-                 log.error(`Failed to save screenshot or HTML for ${request.url}: ${screenShotError.message}`);
+                 log.error(`Failed to save screenshot or HTML for ${request.loadedUrl}: ${screenShotError.message}`);
             }
         },
     });
 
-    customLog('info', `Starting crawler for URL: ${linkedinProfileUrl}`);
+    // The initial URL for the crawler is the base profile URL.
+    // The requestHandler will then construct the activity feed URL from it.
+    customLog('info', `Starting crawler for base profile URL: ${linkedinProfileUrl}`);
     await crawler.run([linkedinProfileUrl]);
 
     customLog('info', 'Actor finished.');
