@@ -18,19 +18,15 @@ async function scrapeLinkedIn() {
 
     try {
         const input = await Actor.getInput();
-        // Log input safely, omitting password
         const { password, ...inputToLog } = input;
         console.log('Input received (password omitted for security):', inputToLog);
-        // Or, for even less verbosity if inputToLog is still too much:
-        // console.log(`Input received. Username: ${input.username}, Profile URLs count: ${input.profileUrls ? input.profileUrls.length : 0}`);
-
 
         const { 
-            username, // Get original password from input for use, not from inputToLog
+            username,
             profileUrls,
             maxPosts = 0,
             useProxy = false
-        } = input; // Use original input here for all fields
+        } = input;
 
         if (!profileUrls || !Array.isArray(profileUrls) || profileUrls.length === 0) {
             console.warn('No profile URLs provided or profileUrls is not a valid array. Exiting peacefully.');
@@ -72,7 +68,7 @@ async function scrapeLinkedIn() {
         console.log('Request interception set up.');
 
         page.setDefaultNavigationTimeout(100000);
-        page.setDefaultTimeout(60000); // Default for non-navigation actions
+        page.setDefaultTimeout(60000);
         console.log('Default timeouts set.');
 
         console.log('Logging in to LinkedIn...');
@@ -106,8 +102,8 @@ async function scrapeLinkedIn() {
         await page.waitForSelector(passwordSelector, { timeout: 60000 });
         console.log('Username and password fields found.');
 
-        await page.type(usernameSelector, input.username); // Use input.username
-        await page.type(passwordSelector, input.password); // Use input.password
+        await page.type(usernameSelector, input.username);
+        await page.type(passwordSelector, input.password);
         console.log('Credentials typed in.');
         
         console.log('Clicking login button and waiting for navigation...');
@@ -147,16 +143,43 @@ async function scrapeLinkedIn() {
                 }
                 
                 console.log(`Waiting for profile main content on ${profileUrl}...`);
-                // Try a more general selector for the main profile area, increase timeout
-                const profileMainSelector = 'main[role="main"]'; // A common main content wrapper
+                const profileMainSelector = 'main[role="main"]';
                 try {
                     await page.waitForSelector(profileMainSelector, { timeout: 75000 }); 
+                    console.log(`Profile main content loaded for ${profileUrl} using selector: ${profileMainSelector}`);
                 } catch (e) {
                     console.warn(`Primary selector '${profileMainSelector}' not found. Trying alternative '#profile-content'...`);
-                    await page.waitForSelector('#profile-content', { timeout: 75000 }); // Alternative, might be specific to some layouts
-                }
-                console.log(`Profile main content loaded for ${profileUrl}.`);
+                    try {
+                        await page.waitForSelector('#profile-content', { timeout: 75000 });
+                        console.log(`Profile main content loaded for ${profileUrl} using selector: #profile-content`);
+                    } catch (e2) {
+                        console.error(`Both primary and alternative selectors for profile main content failed for ${profileUrl}: ${e2.message}`);
+                        // Save HTML content for debugging if selectors fail
+                        if (page && typeof page.content === 'function') {
+                            try {
+                                const htmlContent = await page.content();
+                                const safeProfileUrl = profileUrl.replace(/[^a-zA-Z0-9]/g, '_');
+                                await Actor.setValue(`DEBUG_HTML_${safeProfileUrl}`, htmlContent, { contentType: 'text/html' });
+                                console.log(`Saved HTML content for ${profileUrl} (DEBUG_HTML_${safeProfileUrl}) for debugging.`);
+                            } catch (htmlError) {
+                                console.warn(`Could not get HTML content for ${profileUrl}: ${htmlError.message}`);
+                            }
+                        }
+                        // Try to take a screenshot as a fallback
+                        if (page && typeof page.screenshot === 'function') {
+                            try {
+                                const safeProfileUrl = profileUrl.replace(/[^a-zA-Z0-9]/g, '_');
+                                await page.screenshot({ path: `error_screenshot_${safeProfileUrl}.png` });
+                                console.log(`Error screenshot saved for profile ${profileUrl} as error_screenshot_${safeProfileUrl}.png`);
+                                await Actor.setValue(`error_screenshot_${safeProfileUrl}.png_kvs`, `Screenshot for ${profileUrl} when selectors failed.`);
 
+                            } catch (screenshotError) {
+                                console.warn(`Failed to take error screenshot for ${profileUrl} when selectors failed: ${screenshotError.message}`);
+                            }
+                        }
+                        throw e2; // Re-throw the error to skip this profile
+                    }
+                }
 
                 const activitySelectors = [
                     'a[href*="detail/recent-activity/shares"]',
@@ -274,12 +297,16 @@ async function scrapeLinkedIn() {
 
             } catch (profileError) {
                 console.error(`Failed to scrape profile ${profileUrl}: ${profileError.message}`);
+                // Fallback screenshot if other attempts inside the nested try-catch failed or were not reached
                 if (page && typeof page.screenshot === 'function') {
-                    try {
-                        await page.screenshot({ path: `error_${profileUrl.replace(/[^a-zA-Z0-9]/g, '_')}.png` });
-                        console.log(`Error screenshot saved for profile ${profileUrl}`);
+                     try {
+                        const safeProfileUrl = profileUrl.replace(/[^a-zA-Z0-9]/g, '_');
+                        await page.screenshot({ path: `fallback_error_screenshot_${safeProfileUrl}.png` });
+                        console.log(`Fallback error screenshot saved for profile ${profileUrl} as fallback_error_screenshot_${safeProfileUrl}.png`);
+                        // Attempt to also save this to KVS if not already done by inner catch
+                         await Actor.setValue(`fallback_error_screenshot_${safeProfileUrl}.png_kvs`, `Fallback screenshot for ${profileUrl}.`);
                     } catch (screenshotError) {
-                        console.warn(`Failed to take error screenshot for ${profileUrl}: ${screenshotError.message}`);
+                        console.warn(`Failed to take fallback error screenshot for ${profileUrl}: ${screenshotError.message}`);
                     }
                 }
             }
@@ -298,6 +325,7 @@ async function scrapeLinkedIn() {
                     fullPage: true
                 });
                 console.log('Global error screenshot saved.');
+                 await Actor.setValue('global_error.png_kvs', 'Global error screenshot.');
             } catch (screenshotError) {
                 console.warn(`Failed to take global error screenshot: ${screenshotError.message}`);
             }
