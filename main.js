@@ -9,14 +9,60 @@ puppeteer.use(StealthPlugin());
 
 Actor.init();
 
+// Helper function to create launch options with a specific proxy group
+async function getLaunchOptionsWithProxyGroup(groupName, existingLaunchOptions) {
+    const launchOptions = JSON.parse(JSON.stringify(existingLaunchOptions)); // Deep clone
+    try {
+        console.log(`Attempting to configure proxy with ${groupName} group...`);
+        const proxyConfiguration = await Actor.createProxyConfiguration({
+            groups: [groupName],
+            countryCode: 'US'
+        });
+        if (proxyConfiguration) {
+            const proxyUrl = await proxyConfiguration.newUrl();
+            const sanitizedProxyUrl = proxyUrl.includes('@') 
+                ? proxyUrl.replace(/\/\/([^:]+):[^@]+@/, '//***:***@') 
+                : proxyUrl;
+            console.log(`Successfully configured proxy with ${groupName} group. URL: ${sanitizedProxyUrl}`);
+            launchOptions.args = launchOptions.args.filter(arg => !arg.startsWith('--proxy-server=')); // Remove old proxy arg if any
+            launchOptions.args.push(`--proxy-server=${proxyUrl}`);
+            return { launchOptions, proxyConfiguration }; // Return both for later use if needed
+        }
+    } catch (error) {
+        console.warn(`Failed to configure ${groupName} proxy: ${error.message}.`);
+        if (groupName === 'RESIDENTIAL' && error.message.includes('cannot be used in combination')) {
+            console.warn('This account may not allow mixing RESIDENTIAL with other groups or has specific restrictions.');
+        }
+    }
+    return null; // Return null if configuration failed
+}
+
+// Helper function for proxy pre-flight check
+async function testProxyConnectivity(browser, testUrl = 'https://api.apify.com/v2/browser-info', timeout = 20000) {
+    let page = null;
+    try {
+        page = await browser.newPage();
+        console.log(`Performing pre-flight proxy check, navigating to ${testUrl}...`);
+        await page.goto(testUrl, { waitUntil: ['networkidle2', 'domcontentloaded'], timeout });
+        console.log('Proxy pre-flight check successful.');
+        await page.close();
+        return true;
+    } catch (error) {
+        console.warn(`Proxy pre-flight check failed: ${error.message}`);
+        if (page) await page.close();
+        return false;
+    }
+}
+
 async function scrapeLinkedIn() {
     await new Promise(resolve => setTimeout(resolve, 100)); 
     console.log('Inside scrapeLinkedIn. Using console.log for debugging.');
-
     console.log('scrapeLinkedIn function started.'); 
+    
     let browser = null;
     let page = null;
-    let proxyConfiguration = null; // Keep track of the active proxy configuration
+    let activeProxyConfiguration = null; // To store the currently active proxy configuration object
+    let finalLaunchOptions = null;
 
     try {
         const input = await Actor.getInput();
@@ -27,7 +73,7 @@ async function scrapeLinkedIn() {
             username,
             profileUrls,
             maxPosts = 0,
-            useProxy = true // Default to true
+            useProxy = true
         } = input;
 
         if (!profileUrls || !Array.isArray(profileUrls) || profileUrls.length === 0) {
@@ -35,7 +81,7 @@ async function scrapeLinkedIn() {
             return; 
         }
 
-        const launchOptions = {
+        const baseLaunchOptions = {
             headless: "new",
             args: [
                 '--no-sandbox',
@@ -51,91 +97,98 @@ async function scrapeLinkedIn() {
         };
 
         if (useProxy) {
-            console.log('Proxy usage enabled. Attempting to set up Apify Proxy...');
-            let proxyUrl = null;
-
-            // Attempt 1: Try with RESIDENTIAL group only
-            try {
-                console.log('Attempting to configure proxy with RESIDENTIAL group...');
-                proxyConfiguration = await Actor.createProxyConfiguration({
-                    groups: ['RESIDENTIAL'],
-                    countryCode: 'US'
-                });
-                if (proxyConfiguration) {
-                    proxyUrl = await proxyConfiguration.newUrl();
-                    console.log('Successfully configured proxy with RESIDENTIAL group.');
-                }
-            } catch (error) {
-                console.warn(`Failed to configure RESIDENTIAL proxy: ${error.message}.`);
-                // Log the specific error if it's the known issue
-                if (error.message.includes('cannot be used in combination')) {
-                    console.warn('This account may not allow mixing RESIDENTIAL with other groups or has specific restrictions.');
-                }
-                proxyConfiguration = null; // Reset proxyConfiguration if it failed
-            }
-
-            // Attempt 2: If RESIDENTIAL failed, try with DATACENTER group only
-            if (!proxyUrl) {
-                console.log('Attempting to configure proxy with DATACENTER group...');
-                try {
-                    proxyConfiguration = await Actor.createProxyConfiguration({
-                        groups: ['DATACENTER'],
-                        countryCode: 'US'
-                    });
-                    if (proxyConfiguration) {
-                        proxyUrl = await proxyConfiguration.newUrl();
-                        console.log('Successfully configured proxy with DATACENTER group.');
-                    }
-                } catch (error) {
-                    console.warn(`Failed to configure DATACENTER proxy: ${error.message}.`);
-                    proxyConfiguration = null; // Reset proxyConfiguration
-                }
-            }
+            console.log('Proxy usage enabled. Initiating proxy selection and pre-flight check...');
             
-            // Attempt 3: Fallback to environment variable or custom input URL if Apify Proxy setup failed
-            if (!proxyUrl) {
-                console.warn('Apify Proxy setup via createProxyConfiguration failed.');
-                const envProxyUrl = process.env.APIFY_PROXY_URL;
-                if (envProxyUrl) {
-                    console.log('Using Apify Proxy from environment variable.');
-                    proxyUrl = envProxyUrl;
-                } else if (input.proxyUrl) {
-                    console.log('Using custom proxy URL from input.');
-                    proxyUrl = input.proxyUrl;
-                } else {
-                    console.warn('No alternative proxy found. Proceeding without proxy.');
+            // Attempt 1: RESIDENTIAL Proxies
+            const residentialResult = await getLaunchOptionsWithProxyGroup('RESIDENTIAL', baseLaunchOptions);
+            if (residentialResult) {
+                console.log('Attempting to launch browser with RESIDENTIAL proxy...');
+                try {
+                    browser = await puppeteer.launch(residentialResult.launchOptions);
+                    if (await testProxyConnectivity(browser)) {
+                        finalLaunchOptions = residentialResult.launchOptions;
+                        activeProxyConfiguration = residentialResult.proxyConfiguration;
+                        console.log('Browser launched successfully with working RESIDENTIAL proxy.');
+                    } else {
+                        await browser.close(); browser = null;
+                        console.log('RESIDENTIAL proxy connected but pre-flight check failed.');
+                    }
+                } catch (launchError) {
+                    console.warn(`Failed to launch browser with RESIDENTIAL proxy: ${launchError.message}`);
+                    if(browser) await browser.close(); browser = null;
                 }
             }
 
-            if (proxyUrl) {
-                const sanitizedProxyUrl = proxyUrl.includes('@') 
-                    ? proxyUrl.replace(/\/\/([^:]+):[^@]+@/, '//***:***@') 
-                    : proxyUrl;
-                console.log('Using proxy URL:', sanitizedProxyUrl);
-                launchOptions.args.push(`--proxy-server=${proxyUrl}`);
-                console.log('Browser configured to use the determined proxy.');
-            } else {
-                 console.log('Continuing without proxy as no proxy could be configured.');
+            // Attempt 2: DATACENTER Proxies (if RESIDENTIAL failed)
+            if (!browser) {
+                const datacenterResult = await getLaunchOptionsWithProxyGroup('DATACENTER', baseLaunchOptions);
+                if (datacenterResult) {
+                    console.log('Attempting to launch browser with DATACENTER proxy...');
+                    try {
+                        browser = await puppeteer.launch(datacenterResult.launchOptions);
+                        if (await testProxyConnectivity(browser)) {
+                            finalLaunchOptions = datacenterResult.launchOptions;
+                            activeProxyConfiguration = datacenterResult.proxyConfiguration;
+                            console.log('Browser launched successfully with working DATACENTER proxy.');
+                        } else {
+                            await browser.close(); browser = null;
+                            console.log('DATACENTER proxy connected but pre-flight check failed.');
+                        }
+                    } catch (launchError) {
+                        console.warn(`Failed to launch browser with DATACENTER proxy: ${launchError.message}`);
+                        if(browser) await browser.close(); browser = null;
+                    }
+                }
+            }
+
+            // Attempt 3: Fallback to environment or input proxy URL
+            if (!browser) {
+                console.log('Apify group proxies failed or pre-flight checks unsuccessful. Trying environment/input proxy...');
+                let fallbackProxyUrl = process.env.APIFY_PROXY_URL || input.proxyUrl;
+                if (fallbackProxyUrl) {
+                    const fallbackLaunchOptions = JSON.parse(JSON.stringify(baseLaunchOptions));
+                    fallbackLaunchOptions.args = fallbackLaunchOptions.args.filter(arg => !arg.startsWith('--proxy-server='));
+                    fallbackLaunchOptions.args.push(`--proxy-server=${fallbackProxyUrl}`);
+                    const sanitizedProxyUrl = fallbackProxyUrl.includes('@') 
+                        ? fallbackProxyUrl.replace(/\/\/([^:]+):[^@]+@/, '//***:***@') 
+                        : fallbackProxyUrl;
+                    console.log(`Attempting to launch with fallback proxy: ${sanitizedProxyUrl}`);
+                    try {
+                        browser = await puppeteer.launch(fallbackLaunchOptions);
+                         // Not doing pre-flight for custom/env proxy, assume user knows if it works.
+                        finalLaunchOptions = fallbackLaunchOptions;
+                        console.log('Browser launched with fallback (environment/input) proxy.');
+                    } catch (launchError) {
+                        console.warn(`Failed to launch browser with fallback proxy: ${launchError.message}`);
+                        if(browser) await browser.close(); browser = null;
+                    }
+                }
             }
         }
 
-        console.log('Launching browser with options:', launchOptions);
-        browser = await puppeteer.launch(launchOptions);
-        console.log('Browser launched.');
-
+        // Final Attempt: Launch without proxy if all proxy attempts failed or useProxy is false
+        if (!browser) {
+            if (useProxy) console.warn('All proxy attempts failed. Proceeding without proxy.');
+            else console.log('useProxy is false. Proceeding without proxy.');
+            finalLaunchOptions = JSON.parse(JSON.stringify(baseLaunchOptions));
+            finalLaunchOptions.args = finalLaunchOptions.args.filter(arg => !arg.startsWith('--proxy-server=')); // Ensure no proxy args
+            try {
+                browser = await puppeteer.launch(finalLaunchOptions);
+                console.log('Browser launched successfully without proxy.');
+            } catch (launchError) {
+                console.error(`FATAL: Failed to launch browser even without proxy: ${launchError.message}`);
+                throw launchError;
+            }
+        }
+        
+        console.log('Final browser launch options being used:', finalLaunchOptions);
         page = await browser.newPage();
         console.log('New page created.');
         
-        await page.setViewport({
-            width: 1920,
-            height: 1080,
-            deviceScaleFactor: 1,
-        });
+        await page.setViewport({ width: 1920, height: 1080, deviceScaleFactor: 1 });
         console.log('Viewport set.');
-
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
-        console.log('User agent set to mimic Chrome on Windows.');
-
+        console.log('User agent set.');
         await page.setExtraHTTPHeaders({
             'Accept-Language': 'en-US,en;q=0.9',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
@@ -148,207 +201,124 @@ async function scrapeLinkedIn() {
             'sec-fetch-user': '?1',
             'upgrade-insecure-requests': '1'
         });
-        console.log('Extra HTTP headers set to mimic real browser behavior.');
-
+        console.log('Extra HTTP headers set.');
         await page.setRequestInterception(true);
         page.on('request', (request) => {
-            if (['image', 'stylesheet', 'font'].includes(request.resourceType())) {
-                request.abort();
-            } else {
-                request.continue();
-            }
+            if (['image', 'stylesheet', 'font'].includes(request.resourceType())) request.abort();
+            else request.continue();
         });
         console.log('Request interception set up.');
-
         page.setDefaultNavigationTimeout(120000);
         page.setDefaultTimeout(90000);
         console.log('Default timeouts set.');
 
         console.log('Logging in to LinkedIn...');
-        
         let retries = 3;
-        while (retries > 0) {
+        let loginSuccessful = false;
+        while (retries > 0 && !loginSuccessful) {
             try {
                 console.log(`Navigating to login page (attempt ${4 - retries}/3)...`);
-                await page.goto('https://www.linkedin.com/login', {
-                    waitUntil: ['networkidle2', 'domcontentloaded'],
-                    timeout: 90000
-                });
-                
+                await page.goto('https://www.linkedin.com/login', { waitUntil: ['networkidle2', 'domcontentloaded'], timeout: 90000 });
                 const currentUrl = page.url();
                 if (!currentUrl.includes('linkedin.com/login')) {
-                    console.log(`Redirected to ${currentUrl} instead of login page. Might already be logged in.`);
+                    console.log(`Redirected to ${currentUrl} instead of login page. Assuming already logged in or different flow.`);
+                    loginSuccessful = true; // Assume success if not on login page
                     break;
                 }
-                
                 console.log('Login page navigation successful.');
-                break;
+                loginSuccessful = true; // Mark as successful to exit loop if goto works
             } catch (error) {
                 console.warn(`Login page navigation attempt ${4 - retries}/3 failed: ${error.message}`);
-                
-                if (error.message.includes('ERR_PROXY_CONNECTION_FAILED') && proxyConfiguration && launchOptions.args.some(arg => arg.startsWith('--proxy-server'))) {
-                    console.log('Detected proxy connection error during login. Trying with a new proxy from the same configuration...');
-                    try {
-                        const newProxyUrl = await proxyConfiguration.newUrl();
-                        const oldProxyArgIndex = launchOptions.args.findIndex(arg => arg.startsWith('--proxy-server'));
-                        launchOptions.args[oldProxyArgIndex] = `--proxy-server=${newProxyUrl}`;
-                        // This won't re-launch the browser, but sets up for next full attempt if login fails here.
-                        // For immediate effect, one would need to close and relaunch browser with new options, which is complex mid-flow.
-                        // Or, if supported by puppeteer, change proxy settings on the fly for the existing page/browser.
-                        // For now, we rely on retry of page.goto() with potentially new proxy for next HTTP reqs via browser args.
-                        console.log('Proxy server argument updated for subsequent attempts/navigations if browser were re-launched.');
-                         // Puppeteer does not allow changing proxy of an existing page/browser directly after launch without CDP or complex workarounds.
-                         // The best we can do with proxyConfiguration.newUrl() is for subsequent browser launches or if the current connection miraculously works for a bit.
-                    } catch (proxyRotError) {
-                        console.warn(`Failed to get a new proxy URL from configuration: ${proxyRotError.message}`);
-                    }
-                }
-                
                 retries--;
                 if (retries === 0) {
                     console.error('All login page navigation attempts failed.');
-                    throw error;
+                    throw error; 
                 }
-                await new Promise(resolve => setTimeout(resolve, 5000 + Math.random() * 2000)); // Add jitter to retry delay
+                await new Promise(resolve => setTimeout(resolve, 5000 + Math.random() * 2000));
             }
         }
+        
+        if (!loginSuccessful && page.url().includes('linkedin.com/login')) {
+             throw new Error('Failed to navigate to login page or was stuck on it.');
+        }
 
-        const loginFormExists = await page.evaluate(() => {
-            return !!document.querySelector('#username') && !!document.querySelector('#password');
-        });
-
+        const loginFormExists = await page.evaluate(() => !!document.querySelector('#username') && !!document.querySelector('#password'));
         if (loginFormExists) {
             console.log('Login form detected. Proceeding with login.');
-            const usernameSelector = '#username';
-            const passwordSelector = '#password';
-            
-            await page.waitForSelector(usernameSelector, { timeout: 60000 });
-            await page.waitForSelector(passwordSelector, { timeout: 60000 });
+            await page.waitForSelector('#username', { timeout: 60000 });
+            await page.waitForSelector('#password', { timeout: 60000 });
             console.log('Username and password fields found.');
-
-            await page.type(usernameSelector, input.username, { delay: Math.floor(Math.random() * 150) + 50 });
+            await page.type('#username', username, { delay: Math.floor(Math.random() * 150) + 50 });
             await new Promise(r => setTimeout(r, Math.floor(Math.random() * 1000) + 500));
-            await page.type(passwordSelector, input.password, { delay: Math.floor(Math.random() * 100) + 30 });
-            console.log('Credentials typed in with human-like delays.');
-            
+            await page.type('#password', password, { delay: Math.floor(Math.random() * 100) + 30 });
+            console.log('Credentials typed in.');
             await new Promise(r => setTimeout(r, Math.floor(Math.random() * 1000) + 500));
-            
             await Promise.all([
                 page.click('button[type="submit"]'),
-                page.waitForNavigation({ 
-                    waitUntil: ['networkidle2', 'domcontentloaded'],
-                    timeout: 90000 
-                })
+                page.waitForNavigation({ waitUntil: ['networkidle2', 'domcontentloaded'], timeout: 90000 })
             ]);
+            console.log('Submitted login form.');
         } else {
-            console.log('Login form not detected. Might already be logged in or facing a different page.');
+            console.log('Login form not detected. Assuming already logged in or on a different page (e.g., feed, authwall).');
         }
-        
-        console.log('Login flow completed, current URL:', page.url());
-
+        console.log('Login flow completed. Current URL:', page.url());
         const cookies = await page.cookies();
-        console.log(`Stored ${cookies.length} cookies after login.`);
+        console.log(`Stored ${cookies.length} cookies.`);
         await new Promise(resolve => setTimeout(resolve, 5000));
 
         const posts = [];
         for (const profileUrl of profileUrls) {
             console.log(`Scraping posts from ${profileUrl}`);
-            
             try {
-                retries = 3;
-                while (retries > 0) {
+                let profileNavRetries = 3;
+                let profileNavSuccessful = false;
+                while(profileNavRetries > 0 && !profileNavSuccessful) {
                     try {
-                        console.log(`Navigating to profile ${profileUrl} (attempt ${4 - retries}/3)...`);
-                        await page.goto(profileUrl, {
-                            waitUntil: ['networkidle2', 'domcontentloaded'],
-                            timeout: 120000
-                        });
+                        console.log(`Navigating to profile ${profileUrl} (attempt ${4-profileNavRetries}/3)...`);
+                        await page.goto(profileUrl, { waitUntil: ['networkidle2', 'domcontentloaded'], timeout: 120000 });
                         console.log(`Navigation to profile ${profileUrl} successful. Current URL: ${page.url()}`);
-                        break;
+                        profileNavSuccessful = true;
                     } catch (error) {
-                        console.warn(`Profile navigation attempt ${4 - retries}/3 for ${profileUrl} failed: ${error.message}`);
-                        retries--;
-                        if (retries === 0) {
-                             console.error(`All navigation attempts for ${profileUrl} failed.`);
+                        console.warn(`Profile navigation attempt ${4-profileNavRetries}/3 for ${profileUrl} failed: ${error.message}`);
+                        profileNavRetries--;
+                        if(profileNavRetries === 0) {
+                            console.error(`All navigation attempts for ${profileUrl} failed.`);
                             throw error;
                         }
                         await new Promise(resolve => setTimeout(resolve, 7000 + Math.random() * 3000));
                     }
                 }
+                if(!profileNavSuccessful) continue; // Skip to next profile if navigation failed
 
-                await new Promise(resolve => setTimeout(resolve, 7000));
+                await new Promise(resolve => setTimeout(resolve, 7000)); // Wait for dynamic content
 
-                console.log(`Page URL before attempting to find selectors on ${profileUrl}: ${page.url()}`);
-                const isLikelyLoginPage = await page.evaluate(() => {
-                    return !!(
-                        document.querySelector('form#join-form') ||
-                        document.querySelector('form.login-form') ||
-                        document.querySelector('a[href*="linkedin.com/login"]') ||
-                        document.querySelector('a[data-tracking-control-name="auth_wall_desktop_profile_guest_nav_login-button"]') ||
-                        document.querySelector('h1[data-test-id="authwall-join-form__title"]') ||
-                        document.body.innerText.includes('Sign in to LinkedIn') ||
-                        document.body.innerText.includes('Join LinkedIn') ||
-                        document.querySelector('.authwall-join-form') ||
-                        document.querySelector('.authwall-login-form') ||
-                        window.location.href.includes('authwall') ||
-                        document.querySelector('[data-test-id="signup-modal"]')
-                    );
+                console.log(`Page URL before authwall check on ${profileUrl}: ${page.url()}`);
+                const isAuthwall = await page.evaluate(() => {
+                    return !!( document.querySelector('form#join-form') || document.querySelector('form.login-form') || 
+                               document.querySelector('a[href*="linkedin.com/login"]') || 
+                               document.querySelector('a[data-tracking-control-name="auth_wall_desktop_profile_guest_nav_login-button"]') ||
+                               document.querySelector('h1[data-test-id="authwall-join-form__title"]') ||
+                               document.body.innerText.toLowerCase().includes('sign in to linkedin') || 
+                               document.body.innerText.toLowerCase().includes('join linkedin') ||
+                               document.querySelector('.authwall-join-form') || document.querySelector('.authwall-login-form') ||
+                               window.location.href.includes('authwall') || document.querySelector('[data-test-id="signup-modal"]'));
                 });
 
-                if (isLikelyLoginPage) {
-                    console.warn(`WARNING: Detected a login/join page at URL: ${page.url()} instead of profile content for ${profileUrl}. Login might have failed or session lost.`);
-                    const loginPageHtml = await page.content();
-                    const safeProfileUrlLoginDetect = profileUrl.replace(/[^a-zA-Z0-9]/g, '_');
-                    await Actor.setValue(`DEBUG_LOGIN_PAGE_DETECTED_${safeProfileUrlLoginDetect}.html`, loginPageHtml, { contentType: 'text/html' });
-                    
-                    const loginScreenshotPath = `login_page_detected_${safeProfileUrlLoginDetect}.png`;
-                    await page.screenshot({ path: loginScreenshotPath, fullPage: true });
-                    await Actor.setValue(`DEBUG_LOGIN_PAGE_DETECTED_SCREENSHOT_${safeProfileUrlLoginDetect}.png`, fs.readFileSync(loginScreenshotPath), { contentType: 'image/png' });
-                    fs.unlinkSync(loginScreenshotPath); 
-
-                    throw new Error(`Redirected to a login/join page at ${profileUrl} when profile content was expected. Aborting scrape for this profile.`);
-                }
-
-                try {
-                    const hasSignInButton = await page.evaluate(() => {
-                        const signInButton = document.querySelector('a[data-tracking-control-name="auth_wall_desktop_profile-signin-button"]');
-                        if (signInButton) {
-                            signInButton.click();
-                            return true;
-                        }
-                        return false;
-                    });
-                    
-                    if (hasSignInButton) {
-                        console.log('Found and clicked "Sign In" button on auth wall.');
-                        await page.waitForNavigation({ timeout: 30000 });
-                        
-                        const loginFormAppeared = await page.evaluate(() => {
-                            return !!document.querySelector('#username') && !!document.querySelector('#password');
-                        });
-                        
-                        if (loginFormAppeared) {
-                            console.log('Login form appeared after clicking Sign In. Logging in again...');
-                            await page.type('#username', input.username, { delay: 100 });
-                            await page.type('#password', input.password, { delay: 100 });
-                            await Promise.all([
-                                page.click('button[type="submit"]'),
-                                page.waitForNavigation({ timeout: 60000 })
-                            ]);
-                            console.log('Logged in again after auth wall. Current URL:', page.url());
-                            
-                            await page.goto(profileUrl, { 
-                                waitUntil: ['networkidle2', 'domcontentloaded'],
-                                timeout: 60000 
-                            });
-                            console.log('Navigated back to profile after login. Current URL:', page.url());
-                        }
-                    }
-                } catch (authWallError) {
-                    console.warn('Error handling auth wall:', authWallError.message);
+                if (isAuthwall) {
+                    console.warn(`WARNING: Detected authwall/login page at URL: ${page.url()} for ${profileUrl}.`);
+                    const authwallHtml = await page.content();
+                    const safeProfileUrlAuth = profileUrl.replace(/[^a-zA-Z0-9]/g, '_');
+                    await Actor.setValue(`DEBUG_AUTHWALL_${safeProfileUrlAuth}.html`, authwallHtml, { contentType: 'text/html' });
+                    await page.screenshot({ path: `DEBUG_AUTHWALL_${safeProfileUrlAuth}.png`, fullPage: true });
+                    await Actor.setValue(`DEBUG_AUTHWALL_SCREENSHOT_${safeProfileUrlAuth}.png`, fs.readFileSync(`DEBUG_AUTHWALL_${safeProfileUrlAuth}.png`), { contentType: 'image/png' });
+                    fs.unlinkSync(`DEBUG_AUTHWALL_${safeProfileUrlAuth}.png`);
+                    console.error(`Authwall detected for ${profileUrl}. Skipping this profile. Check KVS for debug files.`);
+                    continue; // Skip this profile
                 }
                 
-                console.log(`Waiting for profile main content on ${profileUrl}...`);
+                // ... (rest of the scraping logic: activity tab, scrolling, post extraction) ...
+                // Ensure this part is also robust
+                 console.log(`Waiting for profile main content on ${profileUrl}...`);
                 const profileMainSelector = 'main[role="main"]';
                 try {
                     await page.waitForSelector(profileMainSelector, { timeout: 75000 }); 
@@ -361,26 +331,11 @@ async function scrapeLinkedIn() {
                     } catch (e2) {
                         console.error(`Both primary and alternative selectors for profile main content failed for ${profileUrl}: ${e2.message}`);
                         if (page && typeof page.content === 'function') {
-                            try {
-                                const htmlContent = await page.content();
-                                const safeProfileUrl = profileUrl.replace(/[^a-zA-Z0-9]/g, '_');
-                                await Actor.setValue(`DEBUG_HTML_${safeProfileUrl}`, htmlContent, { contentType: 'text/html' });
-                                console.log(`Saved HTML content for ${profileUrl} (DEBUG_HTML_${safeProfileUrl}) for debugging.`);
-                            } catch (htmlError) {
-                                console.warn(`Could not get HTML content for ${profileUrl}: ${htmlError.message}`);
-                            }
+                            const htmlContent = await page.content();
+                            const safeProfileUrlDebug = profileUrl.replace(/[^a-zA-Z0-9]/g, '_');
+                            await Actor.setValue(`DEBUG_MAIN_CONTENT_FAIL_${safeProfileUrlDebug}.html`, htmlContent, { contentType: 'text/html' });
                         }
-                        if (page && typeof page.screenshot === 'function') {
-                            try {
-                                const safeProfileUrl = profileUrl.replace(/[^a-zA-Z0-9]/g, '_');
-                                await page.screenshot({ path: `error_screenshot_${safeProfileUrl}.png` });
-                                console.log(`Error screenshot saved for profile ${profileUrl} as error_screenshot_${safeProfileUrl}.png`);
-                                await Actor.setValue(`error_screenshot_${safeProfileUrl}.png_kvs`, `Screenshot for ${profileUrl} when selectors failed.`);
-                            } catch (screenshotError) {
-                                console.warn(`Failed to take error screenshot for ${profileUrl} when selectors failed: ${screenshotError.message}`);
-                            }
-                        }
-                        throw e2;
+                        throw e2; 
                     }
                 }
 
@@ -391,124 +346,95 @@ async function scrapeLinkedIn() {
                     'a[data-test-id="activity-section"]',
                     'a[data-control-name="recent_activity_details_all"]' 
                 ];
-
                 let activityButton = null;
-                console.log(`Searching for activity tab on ${profileUrl}...`);
                 for (const selector of activitySelectors) {
                     activityButton = await page.$(selector);
-                    if (activityButton) {
-                        console.log(`Activity tab found with selector: ${selector}`);
-                        break;
-                    }
+                    if (activityButton) { console.log(`Activity tab found with selector: ${selector}`); break; }
                 }
-
                 if (!activityButton) {
-                    console.warn(`No activity tab found for ${profileUrl}. Skipping this profile.`);
+                    console.warn(`No activity tab found for ${profileUrl}. Skipping post extraction for this profile.`);
                     continue;
                 }
-
-                console.log(`Clicking activity tab and waiting for navigation on ${profileUrl}...`);
                 await Promise.all([
                     activityButton.click(),
-                    page.waitForNavigation({ 
-                        waitUntil: ['networkidle2', 'domcontentloaded'],
-                        timeout: 90000 
-                    })
+                    page.waitForNavigation({ waitUntil: ['networkidle2', 'domcontentloaded'], timeout: 90000 })
                 ]);
                 console.log(`Activity page navigation complete for ${profileUrl}.`);
-
-                console.log(`Waiting for posts to load on activity page of ${profileUrl}...`);
                 await new Promise(resolve => setTimeout(resolve, 7000));
 
-                let loadedPosts = [];
+                let loadedPostElements = [];
                 let previousHeight = 0;
-                let noNewPostsCount = 0;
+                let noNewPostsScrollCount = 0;
                 const maxScrollAttempts = 10;
-
                 console.log(`Starting scroll loop for ${profileUrl}...`);
-                while (noNewPostsCount < maxScrollAttempts) {
-                    loadedPosts = await page.$$('.occludable-update, .feed-shared-update-v2');
-                    console.log(`Found ${loadedPosts.length} potential post elements in current view on ${profileUrl}.`);
-                    
-                    if (maxPosts > 0 && posts.length + loadedPosts.length >= maxPosts) {
-                         console.log(`Max posts limit (${maxPosts}) potentially reached. Will process current view and then stop for this profile.`);
+                while (noNewPostsScrollCount < maxScrollAttempts) {
+                    loadedPostElements = await page.$$('.occludable-update, .feed-shared-update-v2');
+                    console.log(`Found ${loadedPostElements.length} potential post elements in current view on ${profileUrl}.`);
+                    if (maxPosts > 0 && posts.length + loadedPostElements.length >= maxPosts) {
+                         console.log(`Max posts limit (${maxPosts}) potentially reached.`);
                          break; 
                     }
-
                     const currentHeight = await page.evaluate(() => document.documentElement.scrollHeight);
                     if (currentHeight === previousHeight) {
-                        noNewPostsCount++;
-                        console.log(`Scroll height unchanged. Attempt ${noNewPostsCount}/${maxScrollAttempts} on ${profileUrl}.`);
+                        noNewPostsScrollCount++;
+                        console.log(`Scroll height unchanged. Attempt ${noNewPostsScrollCount}/${maxScrollAttempts}.`);
                     } else {
-                        noNewPostsCount = 0;
+                        noNewPostsScrollCount = 0;
                     }
-
-                    if (noNewPostsCount >= maxScrollAttempts){
-                        console.log(`Max scroll attempts reached for ${profileUrl}. Assuming all posts loaded.`);
-                        break;
+                    if (noNewPostsScrollCount >= 3) { // Be more aggressive if height hasn't changed for 3 scrolls
+                        console.log('Scroll height unchanged for 3 attempts, trying a more forceful scroll or breaking.');
+                        await page.evaluate(() => window.scrollBy(0, window.innerHeight + 200)); // Try a larger scroll
+                        await new Promise(resolve => setTimeout(resolve, 4000 + Math.random()*1000));
+                        const newHeightAfterForceScroll = await page.evaluate(() => document.documentElement.scrollHeight);
+                        if (newHeightAfterForceScroll === currentHeight && noNewPostsScrollCount >= 5) {
+                           console.log('Force scroll did not change height. Assuming all posts loaded.'); break;
+                        } else if (newHeightAfterForceScroll !== currentHeight) {
+                            noNewPostsScrollCount = 0; // Reset if force scroll helped
+                        }
                     }
+                     if (noNewPostsScrollCount >= maxScrollAttempts ) break;
 
                     previousHeight = currentHeight;
-                    console.log(`Scrolling down on ${profileUrl}... Current height: ${currentHeight}`);
-                    await page.evaluate(() => {
-                        window.scrollTo(0, document.documentElement.scrollHeight);
-                    });
-                    await new Promise(resolve => setTimeout(resolve, 3000 + Math.random()*1000)); // Jittered scroll delay
+                    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+                    await new Promise(resolve => setTimeout(resolve, 3000 + Math.random()*1000));
                 }
-                console.log(`Finished scroll loop for ${profileUrl}. Found ${loadedPosts.length} elements to process.`);
+                console.log(`Finished scroll loop for ${profileUrl}. Processing ${loadedPostElements.length} elements.`);
 
                 let profilePostCount = 0;
-                for (const postElement of loadedPosts) {
-                    if (maxPosts > 0 && posts.length >= maxPosts) {
-                        console.log(`Global max posts limit (${maxPosts}) reached. Stopping post extraction.`);
-                        break;
-                    }
+                for (const postElement of loadedPostElements) {
+                    if (maxPosts > 0 && posts.length >= maxPosts) break;
                     try {
                         const postData = await page.evaluate(element => {
                             const textElement = element.querySelector('.feed-shared-update-v2__description .feed-shared-inline-show-more-text, .feed-shared-text, .update-components-text');
                             const text = textElement ? textElement.innerText.trim() : '';
-                            
                             const timeElement = element.querySelector('time, .update-components-text-view__timestamp');
                             const timestamp = timeElement ? (timeElement.getAttribute('datetime') || timeElement.innerText.trim()) : '';
-                            
                             const likesElement = element.querySelector('.social-details-social-counts__reactions-count, .social-details-social-counts__count-value');
                             const likesText = likesElement ? likesElement.innerText.trim() : '0';
                             const likes = parseInt(likesText.replace(/[^0-9]/g, '')) || 0;
-                            
-                            return {
-                                text,
-                                timestamp,
-                                likes
-                            };
+                            return { text, timestamp, likes };
                         }, postElement);
-
                         if (postData.text) {
-                            posts.push({
-                                ...postData,
-                                profileUrl,
-                                scrapedAt: new Date().toISOString()
-                            });
+                            posts.push({ ...postData, profileUrl, scrapedAt: new Date().toISOString() });
                             profilePostCount++;
-                        } else {
-                            // console.warn('Extracted post with no text content.'); // Can be noisy
                         }
-
                     } catch (extractError) {
-                        console.error(`Error extracting individual post data on ${profileUrl}: ${extractError.message}`);
+                        console.error(`Error extracting post data on ${profileUrl}: ${extractError.message}`);
                     }
                 }
                 console.log(`Scraped ${profilePostCount} posts from ${profileUrl}. Total posts: ${posts.length}`);
 
             } catch (profileError) {
-                console.error(`Failed to scrape profile ${profileUrl}: ${profileError.message}`);
+                console.error(`Failed to process profile ${profileUrl}: ${profileError.message}`);
                 if (page && typeof page.screenshot === 'function') {
                      try {
-                        const safeProfileUrl = profileUrl.replace(/[^a-zA-Z0-9]/g, '_');
-                        await page.screenshot({ path: `fallback_error_screenshot_${safeProfileUrl}.png` });
-                        console.log(`Fallback error screenshot saved for profile ${profileUrl} as fallback_error_screenshot_${safeProfileUrl}.png`);
-                         await Actor.setValue(`fallback_error_screenshot_${safeProfileUrl}.png_kvs`, `Fallback screenshot for ${profileUrl}.`);
+                        const safeProfileUrlErr = profileUrl.replace(/[^a-zA-Z0-9]/g, '_');
+                        await page.screenshot({ path: `PROFILE_ERROR_${safeProfileUrlErr}.png`, fullPage: true });
+                        await Actor.setValue(`PROFILE_ERROR_SCREENSHOT_${safeProfileUrlErr}.png`, fs.readFileSync(`PROFILE_ERROR_${safeProfileUrlErr}.png`), { contentType: 'image/png' });
+                        fs.unlinkSync(`PROFILE_ERROR_${safeProfileUrlErr}.png`);
+                        console.log(`Saved error screenshot for profile ${profileUrl}.`);
                     } catch (screenshotError) {
-                        console.warn(`Failed to take fallback error screenshot for ${profileUrl}: ${screenshotError.message}`);
+                        console.warn(`Failed to take profile error screenshot for ${profileUrl}: ${screenshotError.message}`);
                     }
                 }
             }
@@ -518,16 +444,13 @@ async function scrapeLinkedIn() {
         console.log(`Successfully scraped ${posts.length} total posts.`);
         
     } catch (error) {
-        console.error(`Scraping failed: ${error.message}`, { stack: error.stack });
-        
+        console.error(`Scraping failed globally: ${error.message}`, { stack: error.stack });
         if (page && typeof page.screenshot === 'function') {
             try {
-                await page.screenshot({
-                    path: 'global_error.png',
-                    fullPage: true
-                });
+                await page.screenshot({ path: 'GLOBAL_ERROR.png', fullPage: true });
+                await Actor.setValue('GLOBAL_ERROR_SCREENSHOT.png', fs.readFileSync('GLOBAL_ERROR.png'), { contentType: 'image/png' });
+                fs.unlinkSync('GLOBAL_ERROR.png');
                 console.log('Global error screenshot saved.');
-                 await Actor.setValue('global_error.png_kvs', 'Global error screenshot.');
             } catch (screenshotError) {
                 console.warn(`Failed to take global error screenshot: ${screenshotError.message}`);
             }
