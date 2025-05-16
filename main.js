@@ -1,3 +1,4 @@
+// Forcing a new commit to attempt to clear Apify cache
 const { Actor } = require('apify');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
