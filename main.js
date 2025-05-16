@@ -18,7 +18,7 @@ Apify.main(async () => {
 
     const browser = await puppeteer.launch({
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox']
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--window-size=1920,1080']
     });
 
     try {
@@ -26,8 +26,8 @@ Apify.main(async () => {
         
         // Set viewport to prevent screenshot issues
         await page.setViewport({
-            width: 1280,
-            height: 800,
+            width: 1920,
+            height: 1080,
             deviceScaleFactor: 1,
         });
 
@@ -69,7 +69,19 @@ Apify.main(async () => {
             await page.waitForSelector('.pv-top-card', { timeout: 10000 });
 
             // Find and click the Activity/Posts tab
-            const activityButton = await page.$('a[href*="detail/recent-activity/shares"]');
+            const activitySelectors = [
+                'a[href*="detail/recent-activity/shares"]',
+                'a[href*="detail/recent-activity/posts"]',
+                'a[href*="recent-activity/all"]',
+                'a[data-test-id="activity-section"]'
+            ];
+
+            let activityButton = null;
+            for (const selector of activitySelectors) {
+                activityButton = await page.$(selector);
+                if (activityButton) break;
+            }
+
             if (!activityButton) {
                 console.log(`No activity tab found for ${profileUrl}`);
                 continue;
@@ -78,12 +90,18 @@ Apify.main(async () => {
             await activityButton.click();
             await page.waitForNavigation({ waitUntil: 'networkidle0' });
 
+            // Wait for posts to load
+            await new Promise(resolve => setTimeout(resolve, 2000));
+
             // Scroll and collect posts
             let loadedPosts = [];
             let previousHeight = 0;
+            let noNewPostsCount = 0;
+            const maxScrollAttempts = 10;
 
-            while (true) {
-                loadedPosts = await page.$$('.occludable-update');
+            while (noNewPostsCount < maxScrollAttempts) {
+                loadedPosts = await page.$$('.occludable-update, .feed-shared-update-v2');
+                console.log(`Found ${loadedPosts.length} posts`);
                 
                 if (maxPosts > 0 && loadedPosts.length >= maxPosts) {
                     break;
@@ -91,26 +109,30 @@ Apify.main(async () => {
 
                 const currentHeight = await page.evaluate(() => document.documentElement.scrollHeight);
                 if (currentHeight === previousHeight) {
-                    break;
+                    noNewPostsCount++;
+                } else {
+                    noNewPostsCount = 0;
                 }
 
                 previousHeight = currentHeight;
-                await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
-                await page.waitForTimeout(1000);
+                await page.evaluate(() => {
+                    window.scrollTo(0, document.documentElement.scrollHeight);
+                });
+                await new Promise(resolve => setTimeout(resolve, 2000));
             }
 
             // Extract post data
             for (const post of loadedPosts) {
                 try {
                     const postData = await page.evaluate(element => {
-                        const text = element.querySelector('.feed-shared-update-v2__description')?.innerText || '';
+                        const text = element.querySelector('.feed-shared-update-v2__description, .feed-shared-text')?.innerText || '';
                         const timestamp = element.querySelector('time')?.getAttribute('datetime') || '';
-                        const likes = element.querySelector('.social-details-social-counts__reactions-count')?.innerText || '0';
+                        const likes = element.querySelector('.social-details-social-counts__reactions-count, .social-details-social-counts__count-value')?.innerText || '0';
                         
                         return {
                             text,
                             timestamp,
-                            likes: parseInt(likes.replace(/,/g, '')) || 0
+                            likes: parseInt(likes.replace(/[^0-9]/g, '')) || 0
                         };
                     }, post);
 
@@ -129,10 +151,13 @@ Apify.main(async () => {
                     console.error('Error extracting post data:', error);
                 }
             }
+
+            console.log(`Scraped ${posts.length} posts from ${profileUrl}`);
         }
 
         // Save the results
         await Apify.pushData(posts);
+        console.log(`Successfully scraped ${posts.length} total posts`);
         
     } catch (error) {
         console.error('Scraping failed:', error);
