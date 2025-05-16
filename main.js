@@ -56,25 +56,48 @@ async function scrapeLinkedIn() {
             console.log('Proxy usage enabled. Setting up Apify Proxy...');
             
             try {
-                // Create proxy configuration
-                proxyConfiguration = await Actor.createProxyConfiguration({
-                    groups: ['RESIDENTIAL'],  // Use residential proxies for better results
+                // Create proxy configuration with fallback options
+                const proxyOptions = {
+                    // Try multiple proxy groups in order of preference
+                    groups: ['RESIDENTIAL', 'DATACENTER'],
                     countryCode: 'US',        // Using US IPs for LinkedIn
-                });
+                };
+
+                proxyConfiguration = await Actor.createProxyConfiguration(proxyOptions);
                 
                 if (proxyConfiguration) {
                     const proxyUrl = await proxyConfiguration.newUrl();
-                    console.log('Apify Proxy obtained successfully:', proxyUrl);
+                    
+                    // Hide credentials in logs
+                    const sanitizedProxyUrl = proxyUrl.replace(/\/\/([^:]+):[^@]+@/, '//groups-RESIDENTIAL,country-US:*********@');
+                    console.log('Apify Proxy obtained successfully:', sanitizedProxyUrl);
                     
                     // Set the proxy to puppeteer launch options
                     launchOptions.args.push(`--proxy-server=${proxyUrl}`);
                     console.log('Browser configured to use Apify Proxy.');
                 } else {
-                    console.warn('Failed to obtain Apify Proxy. Continuing without proxy.');
+                    console.warn('Failed to obtain Apify Proxy. Will try alternative methods.');
+                    
+                    // Try to get proxy from environment
+                    const envProxyUrl = process.env.APIFY_PROXY_URL;
+                    if (envProxyUrl) {
+                        console.log('Using Apify Proxy from environment variable.');
+                        launchOptions.args.push(`--proxy-server=${envProxyUrl}`);
+                    } else {
+                        console.warn('No proxy available from environment. Continuing without proxy.');
+                    }
                 }
             } catch (proxyError) {
                 console.error('Error setting up proxy:', proxyError.message);
-                console.warn('Continuing without proxy.');
+                console.warn('Will try alternative proxy methods...');
+                
+                // Try to use a simple proxy URL if available in the input
+                if (input.proxyUrl) {
+                    console.log('Using custom proxy URL from input.');
+                    launchOptions.args.push(`--proxy-server=${input.proxyUrl}`);
+                } else {
+                    console.warn('No alternative proxy available. Continuing without proxy.');
+                }
             }
         }
 
@@ -147,6 +170,22 @@ async function scrapeLinkedIn() {
                 break;
             } catch (error) {
                 console.warn(`Login page navigation attempt ${4 - retries}/3 failed: ${error.message}`);
+                
+                // If we get a proxy connection error, try to get a new proxy URL
+                if (error.message.includes('ERR_PROXY_CONNECTION_FAILED') && proxyConfiguration) {
+                    console.log('Detected proxy connection error. Trying with a new proxy...');
+                    try {
+                        const newProxyUrl = await proxyConfiguration.newUrl();
+                        await page.authenticate({
+                            username: newProxyUrl.split('@')[0].split('//')[1].split(':')[0],
+                            password: newProxyUrl.split('@')[0].split(':')[1]
+                        });
+                        console.log('Applied new proxy credentials.');
+                    } catch (proxyError) {
+                        console.warn(`Failed to apply new proxy: ${proxyError.message}`);
+                    }
+                }
+                
                 retries--;
                 if (retries === 0) {
                     console.error('All login page navigation attempts failed.');
