@@ -26,8 +26,9 @@
     "maxPosts": {
       "title": "Nombre maximum de posts",
       "type": "integer",
-      "description": "Nombre maximum de posts à extraire (optionnel)",
-      "default": null
+      "description": "Nombre maximum de posts à extraire (optionnel, 0 pour tous les posts)",
+      "nullable": true,
+      "default": 0
     },
     "includeComments": {
       "title": "Inclure les commentaires",
