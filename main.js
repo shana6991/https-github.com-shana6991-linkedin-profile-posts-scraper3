@@ -10,22 +10,27 @@ Actor.init();
 
 async function scrapeLinkedIn() {
     await new Promise(resolve => setTimeout(resolve, 100)); 
-    console.log('Inside scrapeLinkedIn. Replacing Actor.log with console.log for debugging.');
+    console.log('Inside scrapeLinkedIn. Using console.log for debugging.');
 
     console.log('scrapeLinkedIn function started.'); 
     let browser = null;
     let page = null;
 
     try {
-        const input = await Actor.getInput(); // This should still work for input
-        console.log('Input received:', input);
+        const input = await Actor.getInput();
+        // Log input safely, omitting password
+        const { password, ...inputToLog } = input;
+        console.log('Input received (password omitted for security):', inputToLog);
+        // Or, for even less verbosity if inputToLog is still too much:
+        // console.log(`Input received. Username: ${input.username}, Profile URLs count: ${input.profileUrls ? input.profileUrls.length : 0}`);
+
+
         const { 
-            username,
-            password,
+            username, // Get original password from input for use, not from inputToLog
             profileUrls,
             maxPosts = 0,
             useProxy = false
-        } = input;
+        } = input; // Use original input here for all fields
 
         if (!profileUrls || !Array.isArray(profileUrls) || profileUrls.length === 0) {
             console.warn('No profile URLs provided or profileUrls is not a valid array. Exiting peacefully.');
@@ -67,7 +72,7 @@ async function scrapeLinkedIn() {
         console.log('Request interception set up.');
 
         page.setDefaultNavigationTimeout(100000);
-        page.setDefaultTimeout(60000);
+        page.setDefaultTimeout(60000); // Default for non-navigation actions
         console.log('Default timeouts set.');
 
         console.log('Logging in to LinkedIn...');
@@ -101,8 +106,8 @@ async function scrapeLinkedIn() {
         await page.waitForSelector(passwordSelector, { timeout: 60000 });
         console.log('Username and password fields found.');
 
-        await page.type(usernameSelector, username);
-        await page.type(passwordSelector, password);
+        await page.type(usernameSelector, input.username); // Use input.username
+        await page.type(passwordSelector, input.password); // Use input.password
         console.log('Credentials typed in.');
         
         console.log('Clicking login button and waiting for navigation...');
@@ -140,16 +145,24 @@ async function scrapeLinkedIn() {
                         await new Promise(resolve => setTimeout(resolve, 5000));
                     }
                 }
+                
+                console.log(`Waiting for profile main content on ${profileUrl}...`);
+                // Try a more general selector for the main profile area, increase timeout
+                const profileMainSelector = 'main[role="main"]'; // A common main content wrapper
+                try {
+                    await page.waitForSelector(profileMainSelector, { timeout: 75000 }); 
+                } catch (e) {
+                    console.warn(`Primary selector '${profileMainSelector}' not found. Trying alternative '#profile-content'...`);
+                    await page.waitForSelector('#profile-content', { timeout: 75000 }); // Alternative, might be specific to some layouts
+                }
+                console.log(`Profile main content loaded for ${profileUrl}.`);
 
-                console.log(`Waiting for profile content on ${profileUrl}...`);
-                await page.waitForSelector('.pv-top-card', { timeout: 60000 });
-                console.log(`Profile content loaded for ${profileUrl}.`);
 
                 const activitySelectors = [
                     'a[href*="detail/recent-activity/shares"]',
                     'a[href*="detail/recent-activity/posts"]',
                     'a[href*="recent-activity/all"]',
-                    'a[data-test-id="activity-section"]'
+                    'a[data-test-id="activity-section"]' 
                 ];
 
                 let activityButton = null;
@@ -272,7 +285,7 @@ async function scrapeLinkedIn() {
             }
         }
 
-        await Actor.pushData(posts); // pushData should still work hopefully
+        await Actor.pushData(posts); 
         console.log(`Successfully scraped ${posts.length} total posts.`);
         
     } catch (error) {
