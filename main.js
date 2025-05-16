@@ -15,16 +15,17 @@ async function scrapeLinkedIn() {
 
     try {
         const input = await Actor.getInput();
+        Actor.log.info('Input received:', input);
         const { 
             username,
             password,
             profileUrls,
             maxPosts = 0,
-            useProxy = false,
-            proxyUrl // Expecting a proxyUrl field in input if useProxy is true
+            useProxy = false
         } = input;
 
-        const launchOptions = {
+        Actor.log.info('Launching browser...');
+        browser = await puppeteer.launch({
             headless: "new",
             args: [
                 '--no-sandbox',
@@ -32,225 +33,194 @@ async function scrapeLinkedIn() {
                 '--window-size=1920,1080',
                 '--disable-dev-shm-usage',
                 '--disable-accelerated-2d-canvas',
-                '--disable-gpu',
-                '--single-process', // Might help in resource-constrained environments
-                '--disable-web-security',
-                '--disable-features=IsolateOrigins,site-per-process'
+                '--disable-gpu'
             ]
-        };
-
-        if (useProxy && proxyUrl) {
-            console.log(`Using proxy: ${proxyUrl}`);
-            const newProxyUrl = await ProxyChain.anonymizeProxy(proxyUrl);
-            launchOptions.args.push(`--proxy-server=${newProxyUrl}`);
-        } else if (useProxy && !proxyUrl) {
-            console.warn('useProxy is true, but no proxyUrl was provided. Proceeding without proxy.');
-        }
-
-        // Launch browser
-        browser = await puppeteer.launch(launchOptions);
+        });
+        Actor.log.info('Browser launched.');
 
         page = await browser.newPage();
+        Actor.log.info('New page created.');
         
-        // Set viewport
         await page.setViewport({
             width: 1920,
             height: 1080,
             deviceScaleFactor: 1,
         });
+        Actor.log.info('Viewport set.');
 
-        // Setup request interception
         await page.setRequestInterception(true);
         page.on('request', (request) => {
-            if (['image', 'stylesheet', 'font', 'media'].includes(request.resourceType())) {
+            if (['image', 'stylesheet', 'font'].includes(request.resourceType())) {
                 request.abort();
             } else {
                 request.continue();
             }
         });
+        Actor.log.info('Request interception set up.');
 
-        // Set default timeout
-        page.setDefaultNavigationTimeout(180000); // 3 minutes
-        page.setDefaultTimeout(90000); // 1.5 minutes
+        page.setDefaultNavigationTimeout(100000); // ~1.5 minutes for default navigation
+        page.setDefaultTimeout(60000); // 1 minute for other actions
+        Actor.log.info('Default timeouts set.');
 
-        // Login to LinkedIn
-        console.log('Logging in to LinkedIn...');
+        Actor.log.info('Logging in to LinkedIn...');
         
-        // Navigate to login page with retry mechanism
         let retries = 3;
         while (retries > 0) {
             try {
+                Actor.log.info(`Navigating to login page (attempt ${4 - retries}/3)...`);
                 await page.goto('https://www.linkedin.com/login', {
-                    waitUntil: 'networkidle2', // Changed from networkidle0
-                    timeout: 180000
+                    waitUntil: ['networkidle2', 'domcontentloaded'], // Changed to networkidle2
+                    timeout: 90000 // Reduced to 90 seconds
                 });
+                Actor.log.info('Login page navigation successful.');
                 break;
             } catch (error) {
-                console.log(`Login page navigation retry attempt ${4 - retries}/3. Error: ${error.message}`);
+                Actor.log.warn(`Login page navigation attempt ${4 - retries}/3 failed: ${error.message}`);
                 retries--;
-                if (retries === 0) throw error;
-                await new Promise(resolve => setTimeout(resolve, 10000)); // Increased wait time
+                if (retries === 0) {
+                    Actor.log.error('All login page navigation attempts failed.');
+                    throw error;
+                }
+                await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5s before retry
             }
         }
 
-        // Check for CAPTCHA or other blocks
-        const captchaSelectors = ['iframe[title*="CAPTCHA"]' , '[id*="captcha"]' , '[name*="captcha"]' ];
-        for (const selector of captchaSelectors) {
-            if (await page.$(selector)) {
-                console.warn(`CAPTCHA or similar block detected with selector: ${selector}. This might prevent login.`);
-                await Actor.setValue('CAPTCHA_DETECTED', true);
-                // Optionally, save a screenshot
-                await page.screenshot({ path: 'captcha_detected.png' });
-                await Actor.pushData({ error: 'CAPTCHA detected', details: `Selector: ${selector}` });
-                // It might be necessary to stop here or implement CAPTCHA solving if it's a persistent issue.
-            }
-        }
-
-        // Check if login page loaded correctly
         const usernameSelector = '#username';
         const passwordSelector = '#password';
         
-        try {
-            await page.waitForSelector(usernameSelector, { timeout: 60000 });
-            await page.waitForSelector(passwordSelector, { timeout: 60000 });
-        } catch (e) {
-            console.error('Login form not found. Page content might be unexpected.');
-            await page.screenshot({ path: 'login_form_not_found.png' });
-            throw new Error('Login form not found. LinkedIn might have changed its layout or a block is active.');
-        }
-
+        Actor.log.info('Waiting for username and password fields...');
+        await page.waitForSelector(usernameSelector, { timeout: 60000 });
+        await page.waitForSelector(passwordSelector, { timeout: 60000 });
+        Actor.log.info('Username and password fields found.');
 
         await page.type(usernameSelector, username);
         await page.type(passwordSelector, password);
+        Actor.log.info('Credentials typed in.');
         
-        // Click login button and wait for navigation
+        Actor.log.info('Clicking login button and waiting for navigation...');
         await Promise.all([
             page.click('button[type="submit"]'),
             page.waitForNavigation({ 
-                waitUntil: 'networkidle2', // Changed from networkidle0
-                timeout: 180000 
+                waitUntil: ['networkidle2', 'domcontentloaded'], // Changed to networkidle2
+                timeout: 90000 // Reduced to 90 seconds 
             })
         ]);
-
-        // Check for login success (e.g., by looking for a feed element or profile icon)
-        const feedSelector = '[role="feed"], #feed-tab-icon, [data-control-name="identity_profile_photo"]'; // Example selectors for feed/profile
-        try {
-            await page.waitForSelector(feedSelector, { timeout: 60000 });
-            console.log('Login appears successful.');
-        } catch (error) {
-            console.error('Login failed or took too long to redirect to the main page.');
-            await page.screenshot({ path: 'login_failed.png' });
-            throw new Error('Login failed. Check credentials or for potential blocks like CAPTCHA/2FA.');
-        }
+        Actor.log.info('Login successful, navigation complete.');
 
         const posts = [];
         for (const profileUrl of profileUrls) {
-            console.log(`Scraping posts from ${profileUrl}`);
+            Actor.log.info(`Scraping posts from ${profileUrl}`);
             
             try {
-                // Navigate to profile with retry mechanism
                 retries = 3;
                 while (retries > 0) {
                     try {
+                        Actor.log.info(`Navigating to profile ${profileUrl} (attempt ${4 - retries}/3)...`);
                         await page.goto(profileUrl, {
-                            waitUntil: 'networkidle2',
-                            timeout: 180000
+                            waitUntil: ['networkidle2', 'domcontentloaded'], // Changed to networkidle2
+                            timeout: 90000 // Reduced to 90 seconds
                         });
+                        Actor.log.info(`Navigation to profile ${profileUrl} successful.`);
                         break;
                     } catch (error) {
-                        console.log(`Profile navigation retry attempt ${4 - retries}/3. Error: ${error.message}`);
+                        Actor.log.warn(`Profile navigation attempt ${4 - retries}/3 for ${profileUrl} failed: ${error.message}`);
                         retries--;
-                        if (retries === 0) throw error;
-                        await new Promise(resolve => setTimeout(resolve, 10000));
+                        if (retries === 0) {
+                             Actor.log.error(`All navigation attempts for ${profileUrl} failed.`);
+                            throw error; // Rethrow to be caught by outer try-catch for this profile
+                        }
+                        await new Promise(resolve => setTimeout(resolve, 5000));
                     }
                 }
 
-                // Wait for profile content to load
-                await page.waitForSelector('.pv-top-card', { timeout: 90000 });
+                Actor.log.info(`Waiting for profile content on ${profileUrl}...`);
+                await page.waitForSelector('.pv-top-card', { timeout: 60000 });
+                Actor.log.info(`Profile content loaded for ${profileUrl}.`);
 
-                // Find and click the Activity/Posts tab
                 const activitySelectors = [
                     'a[href*="detail/recent-activity/shares"]',
                     'a[href*="detail/recent-activity/posts"]',
                     'a[href*="recent-activity/all"]',
-                    'a[data-test-id="activity-section"]' // Common selector
+                    'a[data-test-id="activity-section"]' // Might be for newer UI
                 ];
 
                 let activityButton = null;
+                Actor.log.info(`Searching for activity tab on ${profileUrl}...`);
                 for (const selector of activitySelectors) {
-                    try {
-                        activityButton = await page.waitForSelector(selector, { timeout: 10000 }); // Wait for selector to be present
-                        if (activityButton) break;
-                    } catch (e) {
-                        // Selector not found, try next
+                    activityButton = await page.$(selector);
+                    if (activityButton) {
+                        Actor.log.info(`Activity tab found with selector: ${selector}`);
+                        break;
                     }
                 }
 
                 if (!activityButton) {
-                    console.warn(`No activity tab found for ${profileUrl}. Taking screenshot: no_activity_tab.png`);
-                    await page.screenshot({ path: 'no_activity_tab.png'});
+                    Actor.log.warn(`No activity tab found for ${profileUrl}. Skipping this profile.`);
                     continue;
                 }
 
+                Actor.log.info(`Clicking activity tab and waiting for navigation on ${profileUrl}...`);
                 await Promise.all([
                     activityButton.click(),
                     page.waitForNavigation({ 
-                        waitUntil: 'networkidle2', 
-                        timeout: 180000 
+                        waitUntil: ['networkidle2', 'domcontentloaded'],
+                        timeout: 90000 
                     })
                 ]);
+                Actor.log.info(`Activity page navigation complete for ${profileUrl}.`);
 
-                // Wait for posts to potentially load after navigation
-                await new Promise(resolve => setTimeout(resolve, 7000)); // Increased wait
+                Actor.log.info(`Waiting for posts to load on activity page of ${profileUrl}...`);
+                await new Promise(resolve => setTimeout(resolve, 7000)); // Increased wait for posts to appear
 
-                // Scroll and collect posts
                 let loadedPosts = [];
                 let previousHeight = 0;
                 let noNewPostsCount = 0;
-                const maxScrollAttempts = 15; // Increased scroll attempts
-                let scrollCount = 0;
+                const maxScrollAttempts = 10; // Max attempts if no new posts are loaded
 
-                console.log('Starting scroll to load posts...');
-                while (scrollCount < maxScrollAttempts) {
-                    loadedPosts = await page.$$('.occludable-update, .feed-shared-update-v2, .social-details-social-activity, .scaffold-finite-scroll__content > div'); // Added more general selectors
-                    console.log(`Scroll attempt ${scrollCount + 1}/${maxScrollAttempts}: Found ${loadedPosts.length} potential post elements in current view.`);
+                Actor.log.info(`Starting scroll loop for ${profileUrl}...`);
+                while (noNewPostsCount < maxScrollAttempts) {
+                    loadedPosts = await page.$$('.occludable-update, .feed-shared-update-v2'); // Common selectors for posts
+                    Actor.log.info(`Found ${loadedPosts.length} potential post elements in current view on ${profileUrl}.`);
                     
-                    if (maxPosts > 0 && posts.length >= maxPosts) {
-                        console.log(`Reached maxPosts limit (${maxPosts}).`);
+                    if (maxPosts > 0 && posts.length + loadedPosts.length >= maxPosts) { // Check combined posts
+                         Actor.log.info(`Max posts limit (${maxPosts}) potentially reached. Will process current view and then stop for this profile.`);
+                         break; 
+                    }
+
+                    const currentHeight = await page.evaluate(() => document.documentElement.scrollHeight);
+                    if (currentHeight === previousHeight) {
+                        noNewPostsCount++;
+                        Actor.log.info(`Scroll height unchanged. Attempt ${noNewPostsCount}/${maxScrollAttempts} on ${profileUrl}.`);
+                    } else {
+                        noNewPostsCount = 0; // Reset counter if new content loaded
+                    }
+
+                    if (noNewPostsCount >= maxScrollAttempts){
+                        Actor.log.info(`Max scroll attempts reached for ${profileUrl}. Assuming all posts loaded.`);
                         break;
                     }
 
-                    const currentHeight = await page.evaluate(() => document.body.scrollHeight);
+                    previousHeight = currentHeight;
+                    Actor.log.info(`Scrolling down on ${profileUrl}... Current height: ${currentHeight}`);
                     await page.evaluate(() => {
-                        window.scrollTo(0, document.body.scrollHeight);
+                        window.scrollTo(0, document.documentElement.scrollHeight);
                     });
-                    await new Promise(resolve => setTimeout(resolve, 3000)); // Wait for scroll and content load
-                    
-                    const newHeight = await page.evaluate(() => document.body.scrollHeight);
-
-                    if (newHeight === currentHeight) {
-                        noNewPostsCount++;
-                        console.log(`Height did not change after scroll. No new posts count: ${noNewPostsCount}`);
-                        if (noNewPostsCount >= 3) { // Consider no new posts after 3 static scrolls
-                           console.log('No new posts loaded after multiple scrolls, stopping scroll for this profile.');
-                           break;
-                        }
-                    } else {
-                        noNewPostsCount = 0;
-                    }
-                    scrollCount++;
+                    await new Promise(resolve => setTimeout(resolve, 3000)); // Wait for content to load after scroll
                 }
-                console.log(`Finished scrolling. Total potential posts found: ${loadedPosts.length}`);
+                Actor.log.info(`Finished scroll loop for ${profileUrl}. Found ${loadedPosts.length} elements to process.`);
 
-                // Extract post data
+                let profilePostCount = 0;
                 for (const postElement of loadedPosts) {
-                    if (maxPosts > 0 && posts.length >= maxPosts) break;
+                    if (maxPosts > 0 && posts.length >= maxPosts) {
+                        Actor.log.info(`Global max posts limit (${maxPosts}) reached. Stopping post extraction.`);
+                        break;
+                    }
                     try {
                         const postData = await page.evaluate(element => {
-                            const textElement = element.querySelector('.feed-shared-update-v2__description .text-view-model, .feed-shared-text, .update-components-text');
+                            const textElement = element.querySelector('.feed-shared-update-v2__description .feed-shared-inline-show-more-text, .feed-shared-text, .update-components-text');
                             const text = textElement ? textElement.innerText.trim() : '';
                             
-                            const timeElement = element.querySelector('time, .feed-shared-actor__sub-description');
+                            const timeElement = element.querySelector('time, .update-components-text-view__timestamp');
                             const timestamp = timeElement ? (timeElement.getAttribute('datetime') || timeElement.innerText.trim()) : '';
                             
                             const likesElement = element.querySelector('.social-details-social-counts__reactions-count, .social-details-social-counts__count-value');
@@ -270,54 +240,63 @@ async function scrapeLinkedIn() {
                                 profileUrl,
                                 scrapedAt: new Date().toISOString()
                             });
+                            profilePostCount++;
+                        } else {
+                            Actor.log.warn('Extracted post with no text content.');
                         }
-                    } catch (error) {
-                        console.warn('Error extracting single post data:', error.message);
+
+                    } catch (extractError) {
+                        Actor.log.error(`Error extracting individual post data on ${profileUrl}: ${extractError.message}`);
                     }
                 }
-                console.log(`Scraped ${posts.filter(p=>p.profileUrl === profileUrl).length} posts from ${profileUrl} (total ${posts.length})`);
-            } catch (error) {
-                console.error(`Error scraping profile ${profileUrl}:`, error);
-                await page.screenshot({ path: `error_profile_${profileUrl.split('/').pop()}.png` });
+                Actor.log.info(`Scraped ${profilePostCount} posts from ${profileUrl}. Total posts: ${posts.length}`);
+
+            } catch (profileError) {
+                // Log error for this specific profile and continue to the next one
+                Actor.log.error(`Failed to scrape profile ${profileUrl}: ${profileError.message}`);
+                // Optionally save partial data or take a screenshot for this specific profile error
+                if (page && typeof page.screenshot === 'function') {
+                    try {
+                        await page.screenshot({ path: `error_${profileUrl.replace(/[^a-zA-Z0-9]/g, '_')}.png` });
+                        Actor.log.info(`Error screenshot saved for profile ${profileUrl}`);
+                    } catch (screenshotError) {
+                        Actor.log.warn(`Failed to take error screenshot for ${profileUrl}: ${screenshotError.message}`);
+                    }
+                }
             }
         }
 
-        // Save the results
         await Actor.pushData(posts);
-        console.log(`Successfully scraped ${posts.length} total posts`);
-        if (posts.length === 0) {
-            console.warn('No posts were scraped. Check logs for errors, CAPTCHA, or incorrect selectors.');
-        }
+        Actor.log.info(`Successfully scraped ${posts.length} total posts.`);
         
     } catch (error) {
-        console.error('Scraping failed due to an unrecoverable error:', error);
+        Actor.log.error(`Scraping failed: ${error.message}`, { stack: error.stack });
         
         if (page && typeof page.screenshot === 'function') {
             try {
                 await page.screenshot({
-                    path: 'fatal_error.png',
+                    path: 'global_error.png',
                     fullPage: true
                 });
-                console.log('Fatal error screenshot saved to fatal_error.png');
+                Actor.log.info('Global error screenshot saved.');
             } catch (screenshotError) {
-                console.error('Failed to take fatal error screenshot:', screenshotError);
+                Actor.log.warn(`Failed to take global error screenshot: ${screenshotError.message}`);
             }
         }
-        
-        await Actor.setValue('FATAL_ERROR_DETAILS', { message: error.message, stack: error.stack });
         throw error;
     } finally {
         if (browser) {
             try {
+                Actor.log.info('Closing browser...');
                 await browser.close();
-            } catch (error) {
-                console.error('Error closing browser:', error);
+                Actor.log.info('Browser closed.');
+            } catch (closeError) {
+                Actor.log.error(`Error closing browser: ${closeError.message}`);
             }
         }
-        // Ensure the actor exits after completion or failure
+        // Finalize the actor run
         await Actor.exit();
     }
 }
 
-// Run the actor
 Actor.main(scrapeLinkedIn);
