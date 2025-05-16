@@ -6,11 +6,13 @@ const ProxyChain = require('proxy-chain');
 
 puppeteer.use(StealthPlugin());
 
-// Initialize the actor
 Actor.init();
-// Actor.log should be used after init, preferably within Actor.main scope or after full initialization
 
 async function scrapeLinkedIn() {
+    // Add a small delay and a console log to check Actor.log availability
+    await new Promise(resolve => setTimeout(resolve, 100)); // Small delay
+    console.log('Inside scrapeLinkedIn, about to use Actor.log. Is Actor.log defined? ', Actor.log !== undefined);
+
     Actor.log.info('scrapeLinkedIn function started.'); 
     let browser = null;
     let page = null;
@@ -303,9 +305,5 @@ async function scrapeLinkedIn() {
     }
 }
 
-// Actor.log can be used here if Actor.init() has fully completed and configured logging.
-// However, it's safer to use it within Actor.main or ensure the context is right.
-// For now, we'll place a log just before Actor.main to confirm execution reaches this point.
-console.log('Logging setup: About to call Actor.main(scrapeLinkedIn)'); // Changed to console.log for safety before Actor.main
-
+console.log('Logging setup: About to call Actor.main(scrapeLinkedIn)');
 Actor.main(scrapeLinkedIn);
