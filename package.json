@@ -2,7 +2,6 @@
     "name": "linkedin-profile-scraper",
     "version": "0.1.0",
     "description": "Scrapes posts from LinkedIn profiles with robust proxy handling and authwall detection.",
-    "type": "module",
     "dependencies": {
         "apify": "^3.0.0",
         "crawlee": "^3.0.0",
