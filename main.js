@@ -27,7 +27,6 @@ function customLog(level, message, extra) {
 async function testAndGetWorkingProxyConfiguration(userInputProxyConfig) {
     const proxyTestAttempts = [];
 
-    // MODIFIED: More robust construction of userDefinedOptions
     if (userInputProxyConfig && userInputProxyConfig.useApifyProxy && userInputProxyConfig.apifyProxyGroups) {
         const userDefinedOptions = {
             groups: userInputProxyConfig.apifyProxyGroups,
@@ -35,6 +34,8 @@ async function testAndGetWorkingProxyConfiguration(userInputProxyConfig) {
         if (userInputProxyConfig.apifyProxyCountry && userInputProxyConfig.apifyProxyCountry.trim() !== '') {
             userDefinedOptions.countryCode = userInputProxyConfig.apifyProxyCountry.trim();
         }
+        // Make sure it's identified as Apify Proxy for createProxyConfiguration
+        userDefinedOptions.useApifyProxy = true; 
         proxyTestAttempts.push({
             options: userDefinedOptions,
             label: 'User-defined Apify Proxy',
@@ -42,24 +43,31 @@ async function testAndGetWorkingProxyConfiguration(userInputProxyConfig) {
     }
 
     proxyTestAttempts.push({
-        options: { groups: ['RESIDENTIAL'] },
+        options: { useApifyProxy: true, groups: ['RESIDENTIAL'] },
         label: 'Apify RESIDENTIAL (Fallback)',
     });
     proxyTestAttempts.push({
-        options: { groups: ['DATACENTER'] },
+        options: { useApifyProxy: true, groups: ['DATACENTER'] },
         label: 'Apify DATACENTER (Fallback)',
     });
 
     for (const attempt of proxyTestAttempts) {
         customLog('info', `[ProxySetup] Attempting to test proxy: ${attempt.label} with options: ${JSON.stringify(attempt.options)}`);
         let browser = null;
-        let maskedProxyUrlForLogging = 'N/A'; // Initialize here
+        let maskedProxyUrlForLogging = 'N/A';
         try {
-            const tempProxyConfig = new ProxyConfiguration(attempt.options);
+            // MODIFICATION: Use Actor.createProxyConfiguration
+            const tempProxyConfig = await Actor.createProxyConfiguration(attempt.options);
+
+            if (!tempProxyConfig) {
+                customLog('warning', `[ProxySetup] Actor.createProxyConfiguration returned null/undefined for ${attempt.label} with options: ${JSON.stringify(attempt.options)}`);
+                continue;
+            }
+
             const proxyUrl = await tempProxyConfig.newUrl();
 
             if (!proxyUrl) {
-                customLog('warning', `[ProxySetup] Could not get a proxy URL for ${attempt.label}.`);
+                customLog('warning', `[ProxySetup] Could not get a proxy URL for ${attempt.label} (config created, but newUrl() failed).`);
                 continue;
             }
             
