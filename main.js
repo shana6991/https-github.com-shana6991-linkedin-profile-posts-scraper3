@@ -1,5 +1,5 @@
 import { Actor, log as apifyLog } from 'apify';
-import { PuppeteerCrawler, ProxyConfiguration, launchPuppeteer } from 'crawlee'; // MODIFIED: Import launchPuppeteer from crawlee
+import { PuppeteerCrawler, ProxyConfiguration, launchPuppeteer } from 'crawlee';
 
 const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const PROXY_TEST_URL = 'https://api.apify.com/v2/browser-info';
@@ -72,7 +72,7 @@ async function testAndGetWorkingProxyConfiguration(userInputProxyConfig) {
             maskedProxyUrlForLogging = proxyUrl.replace(/:[^@]+@/, ':********@');
             customLog('debug', `[ProxySetup] Testing with actual proxy URL from ${attempt.label}: ${maskedProxyUrlForLogging}`);
             
-            browser = await launchPuppeteer({ // Uses launchPuppeteer from crawlee
+browser = await launchPuppeteer({
                 proxyUrl,
                 launchOptions: {
                     headless: true,
@@ -113,7 +113,8 @@ async function checkForAuthwall(page, contextMessage) {
     if (currentUrl.includes('/authwall')) {
         customLog('error', `[${contextMessage}] LinkedIn Authwall detected at URL: ${currentUrl}.`);
         await Actor.setValue('AUTHWALL_DETECTED_URL', currentUrl);
-        await Actor.setValue(`AUTHWALL_SCREENSHOT_${contextMessage.replace(/\s+/g, '_')}`, await page.screenshot({fullPage: true, type: 'jpeg'}), { contentType: 'image/jpeg' });
+        const timestamp = new Date().toISOString().replace(/:/g, '-');
+        await Actor.setValue(`AUTHWALL_SCREENSHOT_${contextMessage.replace(/\s+/g, '_')}_${timestamp}`, await page.screenshot({fullPage: true, type: 'jpeg'}), { contentType: 'image/jpeg' });
         throw new Error(`Authwall detected: ${contextMessage} at ${currentUrl}`);
     }
     customLog('debug', `[${contextMessage}] No authwall detected at ${currentUrl}.`);
@@ -142,7 +143,7 @@ async function autoScroll(page) {
 Actor.main(async () => {
     const input = await Actor.getInput();
     const {
-        linkedinProfileUrl, // This is the base profile URL from input
+        linkedinProfileUrl, 
         email,
         password,
         proxyConfiguration: userProxyInput,
@@ -191,7 +192,6 @@ Actor.main(async () => {
         requestHandlerTimeoutSecs: 180,
 
         requestHandler: async ({ page, request, log }) => {
-            // request.url here is the initial URL passed to crawler.run(), which is linkedinProfileUrl
             log.info(`Processing base profile URL: ${request.url} to derive activity feed.`);
 
             try {
@@ -210,31 +210,50 @@ Actor.main(async () => {
                         () => document.querySelector('.feed-identity-module') ||
                                document.querySelector('[data-test-id="global-nav-search-icon"]') ||
                                window.location.href.includes('/feed/') ||
-                               window.location.href.includes('/authwall') ||
+                               window.location.href.includes('/authwall') || 
+                               window.location.href.includes('/checkpoint/') || // Early checkpoint check
                                document.querySelector('form#login-form') === null,
                         { timeout: 75000 }
                     );
                 } catch (e) {
                     log.warning(`Timeout or error waiting for post-login element/URL: ${e.message}`);
-                    await Actor.setValue('LOGIN_NAVIGATION_FAILURE_SCREENSHOT', await page.screenshot({ fullPage: true, type: 'jpeg', quality: 75 }), { contentType: 'image/jpeg' });
+                    const timestamp = new Date().toISOString().replace(/:/g, '-');
+                    await Actor.setValue(`LOGIN_NAV_FAILURE_SCREENSHOT_${timestamp}.jpg`, await page.screenshot({ fullPage: true, type: 'jpeg', quality: 75 }), { contentType: 'image/jpeg' });
                 }
-                await checkForAuthwall(page, 'After Login Attempt');
-                if (page.url().includes('/feed/')) {
-                    log.info('Successfully logged in to LinkedIn. Current URL: ' + page.url());
-                } else if (page.url().includes('/login') || page.url().includes('session_redirect') || await page.$('form#login-form')) {
-                    log.error('Login failed. Still on login page or redirected. URL: ' + page.url());
-                    await Actor.setValue('LOGIN_FAILURE_SCREENSHOT', await page.screenshot({ fullPage: true, type: 'jpeg', quality: 75 }), { contentType: 'image/jpeg' });
-                    throw new Error('Login failed, page did not navigate to feed.');
+                await checkForAuthwall(page, 'After Login Attempt'); // This will throw if it's an authwall URL
+
+                const currentUrl = page.url();
+                if (currentUrl.includes('/feed/')) {
+                    log.info('Successfully logged in to LinkedIn. Current URL: ' + currentUrl);
+                } else if (currentUrl.includes('/login') || 
+                           currentUrl.includes('session_redirect') || 
+                           await page.$('form#login-form') || 
+                           currentUrl.includes('/checkpoint/')) { // Explicitly check for checkpoint URL
+                    log.error(`Login failed. Page URL: ${currentUrl} indicates login issue or checkpoint.`);
+                    const timestamp = new Date().toISOString().replace(/:/g, '-');
+                    const failureType = currentUrl.includes('/checkpoint/') ? 'CHECKPOINT' : 'LOGIN_PAGE_OR_REDIRECT';
+                    await Actor.setValue(`LOGIN_FAILURE_${failureType}_SCREENSHOT_${timestamp}.jpg`, await page.screenshot({ fullPage: true, type: 'jpeg', quality: 75 }), { contentType: 'image/jpeg' });
+                    await Actor.setValue(`LOGIN_FAILURE_${failureType}_HTML_${timestamp}.html`, await page.content(), { contentType: 'text/html' });
+                    throw new Error(`Login failed, page did not navigate to feed. Current URL: ${currentUrl}`);
                 } else {
-                    log.warning('Login outcome uncertain. Current URL: ' + page.url() + '. Proceeding with caution.');
+                    log.warning('Login outcome uncertain. Current URL: ' + currentUrl + '. Proceeding with caution.');
+                    // Potentially save screenshot here too if this path is reached unexpectedly
+                    const timestamp = new Date().toISOString().replace(/:/g, '-');
+                    await Actor.setValue(`LOGIN_UNCERTAIN_SCREENSHOT_${timestamp}.jpg`, await page.screenshot({ fullPage: true, type: 'jpeg', quality: 75 }), { contentType: 'image/jpeg' });
                 }
             } catch (e) {
                 log.error(`Error during login: ${e.message}`, { stack: e.stack });
+                // Ensure screenshot is saved if error happens before explicit failure checks
+                try {
+                    const timestamp = new Date().toISOString().replace(/:/g, '-');
+                    await Actor.setValue(`LOGIN_EXCEPTION_SCREENSHOT_${timestamp}.jpg`, await page.screenshot({ fullPage: true, type: 'jpeg', quality: 75 }), { contentType: 'image/jpeg' });
+                } catch (screenshotError) {
+                    log.error(`Could not save screenshot during login exception: ${screenshotError.message}`);
+                }
                 throw e;
             }
 
-            // Construct and navigate to the activity feed URL
-            let baseProfileUrl = request.url; // request.url is the linkedinProfileUrl from input
+            let baseProfileUrl = request.url; 
             if (baseProfileUrl.endsWith('/')) {
                 baseProfileUrl = baseProfileUrl.slice(0, -1);
             }
@@ -244,8 +263,6 @@ Actor.main(async () => {
             try {
                 await page.goto(activityFeedUrl, { waitUntil: 'networkidle2', timeout: 90000 });
                 await checkForAuthwall(page, 'Activity Feed Page Load');
-                // Wait for a key element on the activity feed page to ensure it's loaded
-                // The main content area selector should still be valid
                 await page.waitForSelector('main.scaffold-layout__main', { timeout: 60000 });
                 log.info('Successfully navigated to activity feed page.');
             } catch (e) {
@@ -305,7 +322,7 @@ Actor.main(async () => {
                         }
                         if (actualPostContent) {
                             await Actor.pushData({
-                                profileUrl: baseProfileUrl, // Store original base profile URL
+                                profileUrl: baseProfileUrl, 
                                 activityFeedUrlScraped: activityFeedUrl,
                                 postText: actualPostContent,
                                 postTimestamp,
@@ -350,7 +367,7 @@ Actor.main(async () => {
         },
         failedRequestHandler: async ({ request, error, page, log }) => {
             log.error(`Request ${request.url} failed for ${request.loadedUrl} (derived activity page): ${error.message}`, { stack: error.stack });
-            const safeUrl = request.loadedUrl.replace(/[^a-zA-Z0-9]/g, '_'); // Use loadedUrl for error reporting consistency
+            const safeUrl = request.loadedUrl ? request.loadedUrl.replace(/[^a-zA-Z0-9]/g, '_') : 'UNKNOWN_URL';
             const timestamp = new Date().toISOString().replace(/:/g, '-');
             try {
                 if (page) {
@@ -358,13 +375,11 @@ Actor.main(async () => {
                      await Actor.setValue(`FAILED_REQUEST_HTML_${safeUrl}_${timestamp}.html`, await page.content(), { contentType: 'text/html' });
                 }
             } catch (screenShotError) {
-                 log.error(`Failed to save screenshot or HTML for ${request.loadedUrl}: ${screenShotError.message}`);
+                 log.error(`Failed to save screenshot or HTML for ${request.loadedUrl || 'unknown URL'}: ${screenShotError.message}`);
             }
         },
     });
 
-    // The initial URL for the crawler is the base profile URL.
-    // The requestHandler will then construct the activity feed URL from it.
     customLog('info', `Starting crawler for base profile URL: ${linkedinProfileUrl}`);
     await crawler.run([linkedinProfileUrl]);
 
