@@ -1,5 +1,10 @@
 import { Actor, log as apifyLog } from 'apify';
-import { PuppeteerCrawler, ProxyConfiguration, launchPuppeteer } from 'crawlee';
+import { PuppeteerCrawler, ProxyConfiguration } from 'crawlee'; // Removed launchPuppeteer
+import puppeteer from 'puppeteer-extra'; // Added puppeteer-extra
+import StealthPlugin from 'puppeteer-extra-plugin-stealth'; // Added stealth plugin
+
+// Apply the stealth plugin to puppeteer-extra
+puppeteer.use(StealthPlugin());
 
 const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const PROXY_TEST_URL = 'https://api.apify.com/v2/browser-info';
@@ -72,17 +77,19 @@ async function testAndGetWorkingProxyConfiguration(userInputProxyConfig) {
             maskedProxyUrlForLogging = proxyUrl.replace(/:[^@]+@/, ':********@');
             customLog('debug', `[ProxySetup] Testing with actual proxy URL from ${attempt.label}: ${maskedProxyUrlForLogging}`);
             
-browser = await launchPuppeteer({
-                proxyUrl,
-                launchOptions: {
-                    headless: true,
-                    args: ['--no-sandbox', '--disable-setuid-sandbox'],
-                    timeout: 45000,
-                },
-                useChrome: Actor.isAtHome(),
+            // Use puppeteer.launch (from puppeteer-extra)
+            browser = await puppeteer.launch({
+                proxyUrl, // This is passed as an argument to puppeteer.launch
+                headless: true, // Recommended for stealth, can be 'new' or true
+                args: [
+                    '--no-sandbox', 
+                    '--disable-setuid-sandbox',
+                    `--user-agent=${DEFAULT_USER_AGENT}` // Set user agent via args
+                ],
+                timeout: 45000,
             });
             const page = await browser.newPage();
-            await page.setUserAgent(DEFAULT_USER_AGENT);
+            // await page.setUserAgent(DEFAULT_USER_AGENT); // Already set via launch args
             customLog('debug', `[ProxySetup] Navigating to ${PROXY_TEST_URL} for proxy test (${attempt.label} using ${maskedProxyUrlForLogging}).`);
             const response = await page.goto(PROXY_TEST_URL, { timeout: 30000 });
             if (!response || !response.ok()) {
@@ -173,26 +180,27 @@ Actor.main(async () => {
 
     const crawler = new PuppeteerCrawler({
         proxyConfiguration: finalProxyConfiguration,
-        launchContext: {
-            launchOptions: {
-                headless: Actor.isAtHome() ? 'new' : false,
-                args: [
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--window-size=1920,1080',
-                ],
-            },
-            userAgent: DEFAULT_USER_AGENT,
-            useChrome: Actor.isAtHome(),
+        launcher: puppeteer, // Use the stealth-configured puppeteer-extra
+        launchOptions: { // These are passed to puppeteer.launch
+            headless: Actor.isAtHome() ? 'new' : false, // 'new' for headless, false for headful locally
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--window-size=1920,1080',
+                `--user-agent=${DEFAULT_USER_AGENT}` // Ensure user agent is set for the browser instance
+            ],
         },
-        browserPoolOptions: { maxOpenPagesPerBrowser: 1 },
+        browserPoolOptions: { maxOpenPagesPerBrowser: 1 }, // LinkedIn is sensitive to multiple tabs/sessions
         minConcurrency: 1,
-        maxConcurrency: 1,
+        maxConcurrency: 1, // Keep concurrency low to avoid detection
         navigationTimeoutSecs: 120,
         requestHandlerTimeoutSecs: 180,
 
         requestHandler: async ({ page, request, log }) => {
             log.info(`Processing base profile URL: ${request.url} to derive activity feed.`);
+            
+            // User agent should be set by launchOptions, but can be double-checked or set per page if issues arise.
+            // await page.setUserAgent(DEFAULT_USER_AGENT); // Redundant if set in launchOptions args correctly
 
             try {
                 log.info('Attempting to log in to LinkedIn...');
@@ -212,7 +220,7 @@ Actor.main(async () => {
                                window.location.href.includes('/feed/') ||
                                window.location.href.includes('/authwall') || 
                                window.location.href.includes('/checkpoint/') || // Early checkpoint check
-                               document.querySelector('form#login-form') === null,
+                               document.querySelector('form#login-form') === null, // Check if login form is gone
                         { timeout: 75000 }
                     );
                 } catch (e) {
@@ -237,13 +245,11 @@ Actor.main(async () => {
                     throw new Error(`Login failed, page did not navigate to feed. Current URL: ${currentUrl}`);
                 } else {
                     log.warning('Login outcome uncertain. Current URL: ' + currentUrl + '. Proceeding with caution.');
-                    // Potentially save screenshot here too if this path is reached unexpectedly
                     const timestamp = new Date().toISOString().replace(/:/g, '-');
                     await Actor.setValue(`LOGIN_UNCERTAIN_SCREENSHOT_${timestamp}.jpg`, await page.screenshot({ fullPage: true, type: 'jpeg', quality: 75 }), { contentType: 'image/jpeg' });
                 }
             } catch (e) {
                 log.error(`Error during login: ${e.message}`, { stack: e.stack });
-                // Ensure screenshot is saved if error happens before explicit failure checks
                 try {
                     const timestamp = new Date().toISOString().replace(/:/g, '-');
                     await Actor.setValue(`LOGIN_EXCEPTION_SCREENSHOT_${timestamp}.jpg`, await page.screenshot({ fullPage: true, type: 'jpeg', quality: 75 }), { contentType: 'image/jpeg' });
@@ -282,7 +288,7 @@ Actor.main(async () => {
                 while (maxPosts === 0 || postsScrapedCount < maxPosts) {
                     log.debug(`Scrolling activity feed. Scraped so far: ${postsScrapedCount}/${maxPosts === 0 ? 'all' : maxPosts}`);
                     await autoScroll(page);
-                    await page.waitForTimeout(5000 + Math.random() * 2000);
+                    await page.waitForTimeout(5000 + Math.random() * 2000); // Increased and randomized delay
                     const postElements = await page.$$('div[data-urn^="urn:li:activity:"]');
                     if (postElements.length === 0 && postsScrapedCount === 0) {
                         log.warning('No post elements found on activity feed. Ensure selectors (div[data-urn^="urn:li:activity:"]) are up to date or profile has posts.');
@@ -370,7 +376,7 @@ Actor.main(async () => {
             const safeUrl = request.loadedUrl ? request.loadedUrl.replace(/[^a-zA-Z0-9]/g, '_') : 'UNKNOWN_URL';
             const timestamp = new Date().toISOString().replace(/:/g, '-');
             try {
-                if (page) {
+                if (page) { // page might not always be available
                      await Actor.setValue(`FAILED_REQUEST_SCREENSHOT_${safeUrl}_${timestamp}.jpg`, await page.screenshot({ fullPage: true, type: 'jpeg', quality: 70 }), { contentType: 'image/jpeg' });
                      await Actor.setValue(`FAILED_REQUEST_HTML_${safeUrl}_${timestamp}.html`, await page.content(), { contentType: 'text/html' });
                 }
