@@ -1,5 +1,5 @@
-import { Actor, log as apifyLog, launchPuppeteer } from 'apify'; // MODIFIED: Import launchPuppeteer
-import { PuppeteerCrawler, ProxyConfiguration } from 'crawlee'; // Correct imports from Crawlee
+import { Actor, log as apifyLog } from 'apify';
+import { PuppeteerCrawler, ProxyConfiguration, launchPuppeteer } from 'crawlee'; // MODIFIED: Import launchPuppeteer from crawlee
 
 const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const PROXY_TEST_URL = 'https://api.apify.com/v2/browser-info';
@@ -72,15 +72,14 @@ async function testAndGetWorkingProxyConfiguration(userInputProxyConfig) {
             maskedProxyUrlForLogging = proxyUrl.replace(/:[^@]+@/, ':********@');
             customLog('debug', `[ProxySetup] Testing with actual proxy URL from ${attempt.label}: ${maskedProxyUrlForLogging}`);
             
-            // MODIFICATION: Call launchPuppeteer directly
-            browser = await launchPuppeteer({
+            browser = await launchPuppeteer({ // Uses launchPuppeteer from crawlee
                 proxyUrl,
                 launchOptions: {
                     headless: true,
                     args: ['--no-sandbox', '--disable-setuid-sandbox'],
                     timeout: 45000,
                 },
-                useChrome: Actor.isAtHome(), // Actor.isAtHome() is fine here
+                useChrome: Actor.isAtHome(),
             });
             const page = await browser.newPage();
             await page.setUserAgent(DEFAULT_USER_AGENT);
