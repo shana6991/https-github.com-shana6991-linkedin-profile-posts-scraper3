@@ -1,4 +1,4 @@
-import { Actor, log as apifyLog } from 'apify';
+import { Actor, log as apifyLog, launchPuppeteer } from 'apify'; // MODIFIED: Import launchPuppeteer
 import { PuppeteerCrawler, ProxyConfiguration } from 'crawlee'; // Correct imports from Crawlee
 
 const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
@@ -34,7 +34,6 @@ async function testAndGetWorkingProxyConfiguration(userInputProxyConfig) {
         if (userInputProxyConfig.apifyProxyCountry && userInputProxyConfig.apifyProxyCountry.trim() !== '') {
             userDefinedOptions.countryCode = userInputProxyConfig.apifyProxyCountry.trim();
         }
-        // Make sure it's identified as Apify Proxy for createProxyConfiguration
         userDefinedOptions.useApifyProxy = true; 
         proxyTestAttempts.push({
             options: userDefinedOptions,
@@ -56,7 +55,6 @@ async function testAndGetWorkingProxyConfiguration(userInputProxyConfig) {
         let browser = null;
         let maskedProxyUrlForLogging = 'N/A';
         try {
-            // MODIFICATION: Use Actor.createProxyConfiguration
             const tempProxyConfig = await Actor.createProxyConfiguration(attempt.options);
 
             if (!tempProxyConfig) {
@@ -74,14 +72,15 @@ async function testAndGetWorkingProxyConfiguration(userInputProxyConfig) {
             maskedProxyUrlForLogging = proxyUrl.replace(/:[^@]+@/, ':********@');
             customLog('debug', `[ProxySetup] Testing with actual proxy URL from ${attempt.label}: ${maskedProxyUrlForLogging}`);
             
-            browser = await Actor.launchPuppeteer({
+            // MODIFICATION: Call launchPuppeteer directly
+            browser = await launchPuppeteer({
                 proxyUrl,
                 launchOptions: {
                     headless: true,
                     args: ['--no-sandbox', '--disable-setuid-sandbox'],
                     timeout: 45000,
                 },
-                useChrome: Actor.isAtHome(),
+                useChrome: Actor.isAtHome(), // Actor.isAtHome() is fine here
             });
             const page = await browser.newPage();
             await page.setUserAgent(DEFAULT_USER_AGENT);
