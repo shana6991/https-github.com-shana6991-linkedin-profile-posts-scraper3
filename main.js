@@ -12,7 +12,17 @@ function customLog(level, message, extra) {
     if (level === 'debug' && !debugLogEnabled) {
         return;
     }
-    apifyLog[level](message, extra);
+    // If 'extra' is provided, log it. For non-debug, it will be passed to apifyLog.
+    // For debug, it will be stringified if it's an object.
+    if (extra !== undefined) {
+        if (level === 'debug' && typeof extra === 'object' && extra !== null) {
+            apifyLog[level](`${message} ${JSON.stringify(extra)}`);
+        } else {
+            apifyLog[level](message, extra);
+        }
+    } else {
+        apifyLog[level](message);
+    }
 }
 
 // --- Proxy Testing Utility ---
@@ -37,16 +47,22 @@ async function testAndGetWorkingProxyConfiguration(userInputProxyConfig) {
     });
 
     for (const attempt of proxyTestAttempts) {
-        customLog('info', `[ProxySetup] Attempting to test proxy: ${attempt.label}`, attempt.options);
+        // MODIFICATION: Stringify attempt.options for this specific log to avoid potential schema conflict
+        customLog('info', `[ProxySetup] Attempting to test proxy: ${attempt.label} with options: ${JSON.stringify(attempt.options)}`);
         let browser = null;
+        let maskedProxyUrlForLogging = 'N/A';
         try {
             const tempProxyConfig = new ProxyConfiguration(attempt.options);
             const proxyUrl = await tempProxyConfig.newUrl();
+
             if (!proxyUrl) {
                 customLog('warning', `[ProxySetup] Could not get a proxy URL for ${attempt.label}.`);
                 continue;
             }
-            customLog('debug', `[ProxySetup] Testing with proxy URL from ${attempt.label}`);
+            
+            maskedProxyUrlForLogging = proxyUrl.replace(/:[^@]+@/, ':********@');
+            customLog('debug', `[ProxySetup] Testing with actual proxy URL from ${attempt.label}: ${maskedProxyUrlForLogging}`);
+            
             browser = await Actor.launchPuppeteer({
                 proxyUrl,
                 launchOptions: {
@@ -58,7 +74,7 @@ async function testAndGetWorkingProxyConfiguration(userInputProxyConfig) {
             });
             const page = await browser.newPage();
             await page.setUserAgent(DEFAULT_USER_AGENT);
-            customLog('debug', `[ProxySetup] Navigating to ${PROXY_TEST_URL} for proxy test (${attempt.label}).`);
+            customLog('debug', `[ProxySetup] Navigating to ${PROXY_TEST_URL} for proxy test (${attempt.label} using ${maskedProxyUrlForLogging}).`);
             const response = await page.goto(PROXY_TEST_URL, { timeout: 30000 });
             if (!response || !response.ok()) {
                 throw new Error(`Proxy test navigation failed with status: ${response ? response.status() : 'unknown'}`);
@@ -67,11 +83,14 @@ async function testAndGetWorkingProxyConfiguration(userInputProxyConfig) {
             if (!browserInfo || !browserInfo.clientIp) {
                 throw new Error(`Proxy test failed. Could not retrieve client IP from ${PROXY_TEST_URL}`);
             }
-            customLog('info', `[ProxySetup] Proxy test successful for ${attempt.label}. IP via proxy: ${browserInfo.clientIp}`);
+            customLog('info', `[ProxySetup] Proxy test successful for ${attempt.label} (via ${maskedProxyUrlForLogging}). IP: ${browserInfo.clientIp}`);
             await browser.close();
             return { proxyConfiguration: tempProxyConfig, label: attempt.label };
         } catch (e) {
-            customLog('warning', `[ProxySetup] Proxy test failed for ${attempt.label}: ${e.message}`);
+            customLog('warning', `[ProxySetup] Proxy test failed for ${attempt.label} (using ${maskedProxyUrlForLogging}): ${e.message}`);
+            if (debugLogEnabled) {
+                customLog('debug', `[ProxySetup] Error details for ${attempt.label}`, { stack: e.stack });
+            }
             if (browser) await browser.close();
         }
     }
@@ -124,6 +143,7 @@ Actor.main(async () => {
 
     debugLogEnabled = debugLog;
 
+    // Modified customLog usage
     if (!linkedinProfileUrl || !email || !password) {
         customLog('error', 'Missing required input: linkedinProfileUrl, email, or password.');
         await Actor.exit(1);
