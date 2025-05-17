@@ -6,7 +6,9 @@
     "dependencies": {
         "apify": "^3.0.0",
         "crawlee": "^3.0.0",
-        "puppeteer": "^22.0.0"
+        "puppeteer": "^22.0.0",
+        "puppeteer-extra": "^3.3.6",
+        "puppeteer-extra-plugin-stealth": "^2.11.2"
     },
     "scripts": {
         "start": "node main.js",
