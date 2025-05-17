@@ -1,393 +1,411 @@
-import { Actor, log as apifyLog } from 'apify';
-import { PuppeteerCrawler, ProxyConfiguration } from 'crawlee'; // Removed launchPuppeteer
-import puppeteer from 'puppeteer-extra'; // Added puppeteer-extra
-import StealthPlugin from 'puppeteer-extra-plugin-stealth'; // Added stealth plugin
+const Apify = require('apify');
+// const moment = require('moment'); // Removed
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+// const ProxyChain = require('proxy-chain'); // Removed
+// const fs = require('fs'); // Removed
+// const { Actor } = require('apify'); // Removed, Apify.main is used
+// const { PuppeteerCrawler, ProxyConfiguration } = require('crawlee'); // Removed
 
-// Apply the stealth plugin to puppeteer-extra
 puppeteer.use(StealthPlugin());
 
 const DEFAULT_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
-const PROXY_TEST_URL = 'https://api.apify.com/v2/browser-info';
-const LINKEDIN_LOGIN_URL = 'https://www.linkedin.com/login';
 
-let debugLogEnabled = false;
+// Random delay between actions to mimic human behavior
+const humanDelay = async (page, min = 500, max = 2000) => {
+    const delay = Math.floor(Math.random() * (max - min + 1)) + min;
+    await page.waitForTimeout(delay);
+};
 
-// --- Logging Utility ---
-function customLog(level, message, extra) {
-    if (level === 'debug' && !debugLogEnabled) {
-        return;
+// Human-like typing
+const humanType = async (page, selector, text) => {
+    await page.focus(selector);
+    await humanDelay(page, 300, 800);
+    
+    for (let i = 0; i < text.length; i++) {
+        await page.keyboard.type(text[i]);
+        await humanDelay(page, 30, 150);
     }
-    if (extra !== undefined) {
-        if (level === 'debug' && typeof extra === 'object' && extra !== null) {
-            apifyLog[level](`${message} ${JSON.stringify(extra)}`);
-        } else {
-            apifyLog[level](message, extra);
-        }
-    } else {
-        apifyLog[level](message);
+};
+
+Apify.main(async () => {
+    const input = await Apify.getInput();
+    const { 
+        username,
+        password,
+        profileUrls,
+        maxPosts = 0,
+        useProxy = true,  // Default to true for better success rate
+        proxyConfiguration
+    } = input;
+
+    const proxyUrl = await getProxyUrl(useProxy, proxyConfiguration);
+    console.log('Using proxy:', useProxy);
+
+    const launchOptions = {
+        headless: true,
+        args: [
+            '--no-sandbox', 
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-accelerated-2d-canvas',
+            '--disable-gpu',
+            '--window-size=1920,1080',
+        ]
+    };
+
+    // Configure proxy
+    if (proxyUrl) {
+        console.log('Setting up proxy...');
+        launchOptions.args.push(`--proxy-server=${proxyUrl}`);
     }
-}
 
-// --- Proxy Testing Utility ---
-async function testAndGetWorkingProxyConfiguration(userInputProxyConfig) {
-    const proxyTestAttempts = [];
-
-    if (userInputProxyConfig && userInputProxyConfig.useApifyProxy && userInputProxyConfig.apifyProxyGroups) {
-        const userDefinedOptions = {
-            groups: userInputProxyConfig.apifyProxyGroups,
-        };
-        if (userInputProxyConfig.apifyProxyCountry && userInputProxyConfig.apifyProxyCountry.trim() !== '') {
-            userDefinedOptions.countryCode = userInputProxyConfig.apifyProxyCountry.trim();
-        }
-        userDefinedOptions.useApifyProxy = true; 
-        proxyTestAttempts.push({
-            options: userDefinedOptions,
-            label: 'User-defined Apify Proxy',
+    // Set up retry counter for login attempts
+    let loginAttempts = 0;
+    const MAX_LOGIN_ATTEMPTS = 3;
+    
+    const browser = await puppeteer.launch(launchOptions);
+    let page;
+    
+    try {
+        page = await browser.newPage();
+        
+        // Set a realistic user agent
+        await page.setUserAgent(DEFAULT_USER_AGENT);
+        
+        // Set viewport to a common desktop resolution
+        await page.setViewport({
+            width: 1920,
+            height: 1080,
+            deviceScaleFactor: 1,
         });
-    }
 
-    proxyTestAttempts.push({
-        options: { useApifyProxy: true, groups: ['RESIDENTIAL'] },
-        label: 'Apify RESIDENTIAL (Fallback)',
-    });
-    proxyTestAttempts.push({
-        options: { useApifyProxy: true, groups: ['DATACENTER'] },
-        label: 'Apify DATACENTER (Fallback)',
-    });
+        // Add extra headers to appear more like a real browser
+        await page.setExtraHTTPHeaders({
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
+        });
 
-    for (const attempt of proxyTestAttempts) {
-        customLog('info', `[ProxySetup] Attempting to test proxy: ${attempt.label} with options: ${JSON.stringify(attempt.options)}`);
-        let browser = null;
-        let maskedProxyUrlForLogging = 'N/A';
-        try {
-            const tempProxyConfig = await Actor.createProxyConfiguration(attempt.options);
-
-            if (!tempProxyConfig) {
-                customLog('warning', `[ProxySetup] Actor.createProxyConfiguration returned null/undefined for ${attempt.label} with options: ${JSON.stringify(attempt.options)}`);
-                continue;
+        // Optimize performance by blocking unnecessary resources
+        await page.setRequestInterception(true);
+        page.on('request', (request) => {
+            const resourceType = request.resourceType();
+            if (['image', 'stylesheet', 'font', 'media'].includes(resourceType)) {
+                request.abort();
+            } else {
+                request.continue();
             }
+        });
 
-            const proxyUrl = await tempProxyConfig.newUrl();
-
-            if (!proxyUrl) {
-                customLog('warning', `[ProxySetup] Could not get a proxy URL for ${attempt.label} (config created, but newUrl() failed).`);
-                continue;
-            }
-            
-            maskedProxyUrlForLogging = proxyUrl.replace(/:[^@]+@/, ':********@');
-            customLog('debug', `[ProxySetup] Testing with actual proxy URL from ${attempt.label}: ${maskedProxyUrlForLogging}`);
-            
-            // Use puppeteer.launch (from puppeteer-extra)
-            browser = await puppeteer.launch({
-                proxyUrl, // This is passed as an argument to puppeteer.launch
-                headless: true, // Recommended for stealth, can be 'new' or true
-                args: [
-                    '--no-sandbox', 
-                    '--disable-setuid-sandbox',
-                    `--user-agent=${DEFAULT_USER_AGENT}` // Set user agent via args
-                ],
-                timeout: 45000,
+        // Function to handle login
+        async function performLogin() {
+            console.log('Logging in to LinkedIn...');
+            await page.goto('https://www.linkedin.com/login', {
+                waitUntil: 'networkidle2',
+                timeout: 60000
             });
-            const page = await browser.newPage();
-            // await page.setUserAgent(DEFAULT_USER_AGENT); // Already set via launch args
-            customLog('debug', `[ProxySetup] Navigating to ${PROXY_TEST_URL} for proxy test (${attempt.label} using ${maskedProxyUrlForLogging}).`);
-            const response = await page.goto(PROXY_TEST_URL, { timeout: 30000 });
-            if (!response || !response.ok()) {
-                throw new Error(`Proxy test navigation failed with status: ${response ? response.status() : 'unknown'}`);
+
+            // Check if we're on the login page
+            const isLoginPage = await page.evaluate(() => {
+                return !!document.querySelector('#username') && !!document.querySelector('#password');
+            });
+
+            if (!isLoginPage) {
+                console.warn('Not on the expected login page. Current URL:', page.url());
+                await saveDebugData(page, 'unexpected_login_page');
+                throw new Error('Not on the expected LinkedIn login page');
             }
-            const browserInfo = JSON.parse(await response.text());
-            if (!browserInfo || !browserInfo.clientIp) {
-                throw new Error(`Proxy test failed. Could not retrieve client IP from ${PROXY_TEST_URL}`);
+
+            // Human-like typing for username and password
+            await humanType(page, '#username', username);
+            await humanDelay(page, 800, 1500);
+            await humanType(page, '#password', password);
+            await humanDelay(page, 1000, 2000);
+            
+            // Click login button
+            await Promise.all([
+                page.click('button[type="submit"]'),
+                page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 })
+            ]);
+
+            // Check for successful login
+            const isAuthWall = await checkForAuthWall(page);
+            
+            if (isAuthWall) {
+                console.warn('Detected auth wall after login attempt');
+                await saveDebugData(page, 'auth_wall_post_login');
+                return false;
             }
-            customLog('info', `[ProxySetup] Proxy test successful for ${attempt.label} (via ${maskedProxyUrlForLogging}). IP: ${browserInfo.clientIp}`);
-            await browser.close();
-            return { proxyConfiguration: tempProxyConfig, label: attempt.label };
-        } catch (e) {
-            customLog('warning', `[ProxySetup] Proxy test failed for ${attempt.label} (using ${maskedProxyUrlForLogging}): ${e.message}`);
-            if (debugLogEnabled) {
-                customLog('debug', `[ProxySetup] Error details for ${attempt.label}`, { stack: e.stack });
-            }
-            if (browser) await browser.close();
+            
+            console.log('Login successful');
+            return true;
         }
+
+        // Try to login with retries
+        let loginSuccess = false;
+        while (!loginSuccess && loginAttempts < MAX_LOGIN_ATTEMPTS) {
+            try {
+                loginSuccess = await performLogin();
+                if (!loginSuccess) {
+                    loginAttempts++;
+                    console.log(`Login attempt ${loginAttempts} failed. Retrying...`);
+                    await humanDelay(page, 5000, 10000);
+                }
+            } catch (error) {
+                loginAttempts++;
+                console.error(`Login error on attempt ${loginAttempts}:`, error.message);
+                await saveDebugData(page, `login_error_attempt_${loginAttempts}`);
+                
+                if (loginAttempts >= MAX_LOGIN_ATTEMPTS) {
+                    throw new Error(`Failed to login after ${MAX_LOGIN_ATTEMPTS} attempts: ${error.message}`);
+                }
+                
+                await humanDelay(page, 5000, 10000);
+            }
+        }
+
+        if (!loginSuccess) {
+            throw new Error(`Failed to login after ${MAX_LOGIN_ATTEMPTS} attempts`);
+        }
+
+        const posts = [];
+        for (const profileUrl of profileUrls) {
+            console.log(`Scraping posts from ${profileUrl}`);
+            
+            // Navigate to profile with retries
+            let retries = 3;
+            while (retries > 0) {
+                try {
+                    await page.goto(profileUrl, {
+                        waitUntil: 'networkidle2',
+                        timeout: 60000
+                    });
+                    console.log(`Navigation to profile ${profileUrl} successful. Current URL: ${page.url()}`);
+                    break;
+                } catch (error) {
+                    console.warn(`Profile navigation attempt ${4 - retries}/3 for ${profileUrl} failed: ${error.message}`);
+                    retries--;
+                    if (retries === 0) {
+                        console.error(`All navigation attempts for ${profileUrl} failed.`);
+                        throw error;
+                    }
+                    await humanDelay(page, 5000, 10000);
+                }
+            }
+
+            // Check for auth wall or login page after navigation
+            const isAuthWall = await checkForAuthWall(page);
+            if (isAuthWall) {
+                console.warn(`Detected auth wall at profile URL: ${page.url()} for ${profileUrl}`);
+                await saveDebugData(page, `auth_wall_${profileUrl.replace(/[^a-zA-Z0-9]/g, '_')}`);
+                
+                // Try to re-login
+                console.log('Attempting to re-login...');
+                const reloginSuccess = await performLogin();
+                if (!reloginSuccess) {
+                    console.error('Re-login failed, skipping this profile');
+                    continue;
+                }
+                
+                // Retry navigation after re-login
+                await page.goto(profileUrl, {
+                    waitUntil: 'networkidle2',
+                    timeout: 60000
+                });
+                
+                // Check again after re-login and navigation
+                const isStillAuthWall = await checkForAuthWall(page);
+                if (isStillAuthWall) {
+                    console.error('Still hitting auth wall after re-login, skipping profile:', profileUrl);
+                    continue;
+                }
+            }
+            
+            console.log(`Waiting for profile main content on ${profileUrl}...`);
+
+            try {
+                // Wait for profile content to load
+                await page.waitForSelector('.pv-top-card', { timeout: 15000 });
+                
+                // Find and click the Activity/Posts tab
+                const activitySelectors = [
+                    'a[href*="detail/recent-activity/shares"]',
+                    'a[data-control-name="all_activity"]',
+                    'a[href*="recent-activity"]'
+                ];
+                
+                let activityButton = null;
+                for (const selector of activitySelectors) {
+                    activityButton = await page.$(selector);
+                    if (activityButton) break;
+                }
+                
+                if (!activityButton) {
+                    console.log(`No activity tab found for ${profileUrl}`);
+                    continue;
+                }
+
+                await Promise.all([
+                    activityButton.click(),
+                    page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 })
+                ]);
+
+                // Scroll and collect posts
+                let loadedPosts = [];
+                let previousHeight = 0;
+                let scrollAttempts = 0;
+                const MAX_SCROLL_ATTEMPTS = 15;
+
+                while (scrollAttempts < MAX_SCROLL_ATTEMPTS) {
+                    loadedPosts = await page.$$('.occludable-update');
+                    console.log(`Found ${loadedPosts.length} posts so far...`);
+                    
+                    if (maxPosts > 0 && loadedPosts.length >= maxPosts) {
+                        console.log(`Reached desired maximum of ${maxPosts} posts.`);
+                        break;
+                    }
+
+                    const currentHeight = await page.evaluate(() => document.documentElement.scrollHeight);
+                    if (currentHeight === previousHeight) {
+                        scrollAttempts++;
+                        
+                        if (scrollAttempts >= 3) {
+                            console.log('No new content loaded after multiple scroll attempts, ending collection.');
+                            break;
+                        }
+                        
+                        console.log('No new content loaded, waiting a bit longer...');
+                        await humanDelay(page, 3000, 5000);
+                    } else {
+                        scrollAttempts = 0; // Reset counter when page height changes
+                        previousHeight = currentHeight;
+                    }
+
+                    await page.evaluate(() => window.scrollBy(0, 800)); // More natural scrolling
+                    await humanDelay(page, 1000, 2000);
+                }
+
+                // Extract post data
+                for (const post of loadedPosts) {
+                    try {
+                        const postData = await page.evaluate(element => {
+                            const text = element.querySelector('.feed-shared-update-v2__description')?.innerText || 
+                                         element.querySelector('.update-components-text')?.innerText || '';
+                            
+                            const timestamp = element.querySelector('time')?.getAttribute('datetime') || '';
+                            
+                            const likesElement = element.querySelector('.social-details-social-counts__reactions-count') || 
+                                               element.querySelector('.social-counts__reactions-count');
+                            const likes = likesElement ? likesElement.innerText : '0';
+                            
+                            // Get URL of the post if available
+                            const postUrl = element.querySelector('a.app-aware-link[href*="/posts/"]')?.href || '';
+                            
+                            return {
+                                text,
+                                timestamp,
+                                likes: parseInt(likes.replace(/[^\d]/g, '')) || 0,
+                                postUrl
+                            };
+                        }, post);
+
+                        if (postData.text) {
+                            posts.push({
+                                ...postData,
+                                profileUrl,
+                                scrapedAt: new Date().toISOString()
+                            });
+                        }
+
+                        if (maxPosts > 0 && posts.length >= maxPosts) {
+                            break;
+                        }
+                    } catch (error) {
+                        console.error('Error extracting post data:', error);
+                    }
+                }
+            } catch (error) {
+                console.error(`Error processing profile ${profileUrl}:`, error.message);
+                await saveDebugData(page, `profile_error_${profileUrl.replace(/[^a-zA-Z0-9]/g, '_')}`);
+            }
+        }
+
+        // Save the results
+        console.log(`Successfully scraped ${posts.length} posts`);
+        await Apify.pushData(posts);
+        
+    } catch (error) {
+        console.error('Scraping failed:', error);
+        if (page) {
+            await saveDebugData(page, 'final_error');
+        }
+        throw error;
+    } finally {
+        await browser.close();
     }
-    customLog('warning', '[ProxySetup] All proxy configurations failed the test.');
+});
+
+// Utility functions
+async function getProxyUrl(useProxy, proxyConfiguration) {
+    if (!useProxy) return null;
+    
+    // Use Apify Proxy if available
+    if (proxyConfiguration) {
+        const proxyConfig = await Apify.createProxyConfiguration(proxyConfiguration);
+        const proxyUrl = proxyConfig.newUrl();
+        console.log('Using Apify Proxy');
+        return proxyUrl;
+    }
+    
+    // Use global proxy from env if available
+    const apifyProxyUrl = process.env.APIFY_PROXY_URL;
+    if (apifyProxyUrl) {
+        console.log('Using Apify Proxy from environment');
+        return apifyProxyUrl;
+    }
+    
+    console.log('No proxy configuration found');
     return null;
 }
 
-// --- Authwall Detection Utility ---
-async function checkForAuthwall(page, contextMessage) {
-    const currentUrl = page.url();
-    if (currentUrl.includes('/authwall')) {
-        customLog('error', `[${contextMessage}] LinkedIn Authwall detected at URL: ${currentUrl}.`);
-        await Actor.setValue('AUTHWALL_DETECTED_URL', currentUrl);
-        const timestamp = new Date().toISOString().replace(/:/g, '-');
-        await Actor.setValue(`AUTHWALL_SCREENSHOT_${contextMessage.replace(/\s+/g, '_')}_${timestamp}`, await page.screenshot({fullPage: true, type: 'jpeg'}), { contentType: 'image/jpeg' });
-        throw new Error(`Authwall detected: ${contextMessage} at ${currentUrl}`);
+async function saveDebugData(page, identifier) {
+    try {
+        const now = new Date().toISOString().replace(/:/g, '-');
+        const htmlContent = await page.content();
+        const safeIdentifier = identifier.replace(/[^a-zA-Z0-9_-]/g, '_');
+        
+        // Save HTML
+        await Apify.setValue(`DEBUG_${safeIdentifier}_${now}.html`, htmlContent, { contentType: 'text/html' });
+        
+        // Save screenshot
+        const screenshotBuffer = await page.screenshot({ fullPage: true });
+        await Apify.setValue(`DEBUG_${safeIdentifier}_${now}.png`, screenshotBuffer, { contentType: 'image/png' });
+        
+        console.log(`Debug data saved for ${identifier}`);
+    } catch (error) {
+        console.error(`Failed to save debug data for ${identifier}:`, error);
     }
-    customLog('debug', `[${contextMessage}] No authwall detected at ${currentUrl}.`);
-    return false;
 }
 
-// --- AutoScroll Utility ---
-async function autoScroll(page) {
-    await page.evaluate(async () => {
-        await new Promise((resolve) => {
-            let totalHeight = 0;
-            const distance = 100;
-            const timer = setInterval(async () => {
-                const scrollHeight = document.body.scrollHeight;
-                window.scrollBy(0, distance);
-                totalHeight += distance;
-                if (totalHeight >= scrollHeight - window.innerHeight) {
-                    clearInterval(timer);
-                    resolve();
-                }
-            }, 300);
-        });
-    }); 
-}
-
-Actor.main(async () => {
-    const input = await Actor.getInput();
-    const {
-        linkedinProfileUrl, 
-        email,
-        password,
-        proxyConfiguration: userProxyInput,
-        maxPosts = 20,
-        debugLog = false,
-    } = input;
-
-    debugLogEnabled = debugLog;
-
-    if (!linkedinProfileUrl || !email || !password) {
-        customLog('error', 'Missing required input: linkedinProfileUrl, email, or password.');
-        await Actor.exit(1);
-        return;
-    }
-
-    customLog('info', 'Actor starting...', { linkedinProfileUrl, maxPosts, debugLogEnabled });
-
-    const proxyInfo = await testAndGetWorkingProxyConfiguration(userProxyInput);
-    const finalProxyConfiguration = proxyInfo ? proxyInfo.proxyConfiguration : undefined;
-    let proxyUsedLabel = proxyInfo ? proxyInfo.label : "No Proxy (All tests failed or no proxy used)";
-
-    if (proxyInfo) {
-        customLog('info', `Using proxy configuration: ${proxyUsedLabel}`);
-    } else {
-        customLog('warning', 'Proceeding without a successfully tested Apify Proxy. LinkedIn scraping is likely to fail or be unreliable.');
-    }
-
-    const crawler = new PuppeteerCrawler({
-        proxyConfiguration: finalProxyConfiguration,
-        launcher: puppeteer, // Use the stealth-configured puppeteer-extra
-        launchOptions: { // These are passed to puppeteer.launch
-            headless: Actor.isAtHome() ? 'new' : false, // 'new' for headless, false for headful locally
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--window-size=1920,1080',
-                `--user-agent=${DEFAULT_USER_AGENT}` // Ensure user agent is set for the browser instance
-            ],
-        },
-        browserPoolOptions: { maxOpenPagesPerBrowser: 1 }, // LinkedIn is sensitive to multiple tabs/sessions
-        minConcurrency: 1,
-        maxConcurrency: 1, // Keep concurrency low to avoid detection
-        navigationTimeoutSecs: 120,
-        requestHandlerTimeoutSecs: 180,
-
-        requestHandler: async ({ page, request, log }) => {
-            log.info(`Processing base profile URL: ${request.url} to derive activity feed.`);
-            
-            // User agent should be set by launchOptions, but can be double-checked or set per page if issues arise.
-            // await page.setUserAgent(DEFAULT_USER_AGENT); // Redundant if set in launchOptions args correctly
-
-            try {
-                log.info('Attempting to log in to LinkedIn...');
-                await page.goto(LINKEDIN_LOGIN_URL, { waitUntil: 'networkidle2', timeout: 90000 });
-                await checkForAuthwall(page, 'LinkedIn Login Page');
-                await page.waitForSelector('#username', { timeout: 45000 });
-                await page.type('#username', email, { delay: 120 + Math.random() * 80 });
-                await page.waitForSelector('#password', { timeout: 45000 });
-                await page.type('#password', password, { delay: 110 + Math.random() * 90 });
-                log.debug('Credentials entered. Clicking login button.');
-                await page.click('button[type="submit"]', { delay: 150 + Math.random() * 100 });
-                log.debug('Waiting for navigation after login attempt...');
-                try {
-                    await page.waitForFunction(
-                        () => document.querySelector('.feed-identity-module') ||
-                               document.querySelector('[data-test-id="global-nav-search-icon"]') ||
-                               window.location.href.includes('/feed/') ||
-                               window.location.href.includes('/authwall') || 
-                               window.location.href.includes('/checkpoint/') || // Early checkpoint check
-                               document.querySelector('form#login-form') === null, // Check if login form is gone
-                        { timeout: 75000 }
-                    );
-                } catch (e) {
-                    log.warning(`Timeout or error waiting for post-login element/URL: ${e.message}`);
-                    const timestamp = new Date().toISOString().replace(/:/g, '-');
-                    await Actor.setValue(`LOGIN_NAV_FAILURE_SCREENSHOT_${timestamp}.jpg`, await page.screenshot({ fullPage: true, type: 'jpeg', quality: 75 }), { contentType: 'image/jpeg' });
-                }
-                await checkForAuthwall(page, 'After Login Attempt'); // This will throw if it's an authwall URL
-
-                const currentUrl = page.url();
-                if (currentUrl.includes('/feed/')) {
-                    log.info('Successfully logged in to LinkedIn. Current URL: ' + currentUrl);
-                } else if (currentUrl.includes('/login') || 
-                           currentUrl.includes('session_redirect') || 
-                           await page.$('form#login-form') || 
-                           currentUrl.includes('/checkpoint/')) { // Explicitly check for checkpoint URL
-                    log.error(`Login failed. Page URL: ${currentUrl} indicates login issue or checkpoint.`);
-                    const timestamp = new Date().toISOString().replace(/:/g, '-');
-                    const failureType = currentUrl.includes('/checkpoint/') ? 'CHECKPOINT' : 'LOGIN_PAGE_OR_REDIRECT';
-                    await Actor.setValue(`LOGIN_FAILURE_${failureType}_SCREENSHOT_${timestamp}.jpg`, await page.screenshot({ fullPage: true, type: 'jpeg', quality: 75 }), { contentType: 'image/jpeg' });
-                    await Actor.setValue(`LOGIN_FAILURE_${failureType}_HTML_${timestamp}.html`, await page.content(), { contentType: 'text/html' });
-                    throw new Error(`Login failed, page did not navigate to feed. Current URL: ${currentUrl}`);
-                } else {
-                    log.warning('Login outcome uncertain. Current URL: ' + currentUrl + '. Proceeding with caution.');
-                    const timestamp = new Date().toISOString().replace(/:/g, '-');
-                    await Actor.setValue(`LOGIN_UNCERTAIN_SCREENSHOT_${timestamp}.jpg`, await page.screenshot({ fullPage: true, type: 'jpeg', quality: 75 }), { contentType: 'image/jpeg' });
-                }
-            } catch (e) {
-                log.error(`Error during login: ${e.message}`, { stack: e.stack });
-                try {
-                    const timestamp = new Date().toISOString().replace(/:/g, '-');
-                    await Actor.setValue(`LOGIN_EXCEPTION_SCREENSHOT_${timestamp}.jpg`, await page.screenshot({ fullPage: true, type: 'jpeg', quality: 75 }), { contentType: 'image/jpeg' });
-                } catch (screenshotError) {
-                    log.error(`Could not save screenshot during login exception: ${screenshotError.message}`);
-                }
-                throw e;
-            }
-
-            let baseProfileUrl = request.url; 
-            if (baseProfileUrl.endsWith('/')) {
-                baseProfileUrl = baseProfileUrl.slice(0, -1);
-            }
-            const activityFeedUrl = `${baseProfileUrl}/recent-activity/all/`;
-            log.info(`Navigating to activity feed: ${activityFeedUrl}`);
-
-            try {
-                await page.goto(activityFeedUrl, { waitUntil: 'networkidle2', timeout: 90000 });
-                await checkForAuthwall(page, 'Activity Feed Page Load');
-                await page.waitForSelector('main.scaffold-layout__main', { timeout: 60000 });
-                log.info('Successfully navigated to activity feed page.');
-            } catch (e) {
-                log.error(`Error navigating to activity feed page ${activityFeedUrl}: ${e.message}`, { stack: e.stack });
-                throw e;
-            }
-
-            log.info('Attempting to scrape posts from activity feed...');
-            let postsScrapedCount = 0;
-            try {
-                const postsFeedContainerSelector = 'main.scaffold-layout__main';
-                await page.waitForSelector(postsFeedContainerSelector, { timeout: 45000 });
-                let lastHeight = await page.evaluate(() => document.body.scrollHeight);
-                let noNewPostsStreak = 0;
-                const MAX_NO_NEW_POSTS_STREAK = 3;
-
-                while (maxPosts === 0 || postsScrapedCount < maxPosts) {
-                    log.debug(`Scrolling activity feed. Scraped so far: ${postsScrapedCount}/${maxPosts === 0 ? 'all' : maxPosts}`);
-                    await autoScroll(page);
-                    await page.waitForTimeout(5000 + Math.random() * 2000); // Increased and randomized delay
-                    const postElements = await page.$$('div[data-urn^="urn:li:activity:"]');
-                    if (postElements.length === 0 && postsScrapedCount === 0) {
-                        log.warning('No post elements found on activity feed. Ensure selectors (div[data-urn^="urn:li:activity:"]) are up to date or profile has posts.');
-                        break;
-                    }
-                    let newPostsInThisScroll = 0;
-                    for (const postElement of postElements) {
-                        if (maxPosts > 0 && postsScrapedCount >= maxPosts) break;
-                        const isProcessed = await postElement.evaluate(el => el.getAttribute('data-scraped-by-actor'));
-                        if (isProcessed) continue;
-                        let postText = '';
-                        try {
-                            const textElement = await postElement.$('.feed-shared-update-v2__description .feed-shared-inline-show-more-text, .update-components-text.break-words');
-                            if (textElement) {
-                                postText = await textElement.evaluate(el => el.innerText.trim());
-                            } else {
-                                log.debug('Post text element not found for a post candidate.');
-                            }
-                        } catch (e) {
-                            log.debug(`Could not extract text for a post: ${e.message}`);
-                        }
-                        let postTimestamp = '';
-                        try {
-                            const timeElement = await postElement.$('.update-components-text-view__timestamp');
-                            if (timeElement) {
-                                postTimestamp = await timeElement.evaluate(el => el.innerText.trim());
-                            } else {
-                                log.debug('Timestamp element not found for a post candidate.');
-                            }
-                        } catch (e) {
-                            log.debug(`Could not extract timestamp for a post: ${e.message}`);
-                        }
-                        let actualPostContent = postText;
-                        if (!actualPostContent) {
-                             const genericContent = await postElement.$('.feed-shared-update-v2__commentary, .update-components-text');
-                             if(genericContent) actualPostContent = await genericContent.evaluate(el => el.innerText.trim());
-                        }
-                        if (actualPostContent) {
-                            await Actor.pushData({
-                                profileUrl: baseProfileUrl, 
-                                activityFeedUrlScraped: activityFeedUrl,
-                                postText: actualPostContent,
-                                postTimestamp,
-                                likes: 'N/A (Selector TODO)',
-                                comments: 'N/A (Selector TODO)',
-                                scrapedAt: new Date().toISOString(),
-                                proxyUsed: proxyUsedLabel,
-                            });
-                            postsScrapedCount++;
-                            newPostsInThisScroll++;
-                            await postElement.evaluate(el => el.setAttribute('data-scraped-by-actor', 'true'));
-                            log.debug(`Scraped post #${postsScrapedCount}: ${actualPostContent.substring(0, 70)}...`);
-                        }
-                        if (maxPosts > 0 && postsScrapedCount >= maxPosts) {
-                            log.info(`Reached maxPosts limit of ${maxPosts}.`);
-                            break;
-                        }
-                    }
-                    if (maxPosts > 0 && postsScrapedCount >= maxPosts) break;
-                    const currentHeight = await page.evaluate(() => document.body.scrollHeight);
-                    if (newPostsInThisScroll === 0 && currentHeight === lastHeight) {
-                        noNewPostsStreak++;
-                        log.debug(`No new posts loaded AND height did not change. Scroll streak: ${noNewPostsStreak}/${MAX_NO_NEW_POSTS_STREAK}`);
-                        if (noNewPostsStreak >= MAX_NO_NEW_POSTS_STREAK) {
-                            log.info('No new posts found after multiple scrolls with no height change. Assuming end of feed or issue.');
-                            break;
-                        }
-                    } else {
-                        noNewPostsStreak = 0;
-                    }
-                    lastHeight = currentHeight;
-                    if (postElements.length === 0 && postsScrapedCount > 0) {
-                        log.info('No more post elements found (div[data-urn^="urn:li:activity:"]). Assuming end of feed.');
-                        break;
-                    }
-                }
-                log.info(`Finished scraping from ${activityFeedUrl}. Total posts scraped: ${postsScrapedCount}`);
-            } catch (e) {
-                log.error(`Error during post scraping on ${activityFeedUrl}: ${e.message}`, { stack: e.stack });
-                throw e;
-            }
-        },
-        failedRequestHandler: async ({ request, error, page, log }) => {
-            log.error(`Request ${request.url} failed for ${request.loadedUrl} (derived activity page): ${error.message}`, { stack: error.stack });
-            const safeUrl = request.loadedUrl ? request.loadedUrl.replace(/[^a-zA-Z0-9]/g, '_') : 'UNKNOWN_URL';
-            const timestamp = new Date().toISOString().replace(/:/g, '-');
-            try {
-                if (page) { // page might not always be available
-                     await Actor.setValue(`FAILED_REQUEST_SCREENSHOT_${safeUrl}_${timestamp}.jpg`, await page.screenshot({ fullPage: true, type: 'jpeg', quality: 70 }), { contentType: 'image/jpeg' });
-                     await Actor.setValue(`FAILED_REQUEST_HTML_${safeUrl}_${timestamp}.html`, await page.content(), { contentType: 'text/html' });
-                }
-            } catch (screenShotError) {
-                 log.error(`Failed to save screenshot or HTML for ${request.loadedUrl || 'unknown URL'}: ${screenShotError.message}`);
-            }
-        },
+async function checkForAuthWall(page) {
+    return await page.evaluate(() => {
+        return !!(
+            document.querySelector('form#join-form') ||
+            document.querySelector('form.login-form') ||
+            document.querySelector('a[href*="linkedin.com/login"]') ||
+            document.querySelector('a[data-tracking-control-name="auth_wall_desktop_profile_guest_nav_login-button"]') ||
+            document.querySelector('h1[data-test-id="authwall-join-form__title"]') ||
+            document.querySelector('.authwall-join-form') ||
+            document.querySelector('.authwall-login-form') ||
+            document.querySelector('[data-test-id="authwall"]') ||
+            document.body.innerText.includes('Sign in to LinkedIn') ||
+            document.body.innerText.includes('Join LinkedIn') ||
+            document.body.innerText.includes('Join now') ||
+            document.body.innerText.includes('Sign in') ||
+            document.body.innerText.includes('Please log in to continue')
+        );
     });
-
-    customLog('info', `Starting crawler for base profile URL: ${linkedinProfileUrl}`);
-    await crawler.run([linkedinProfileUrl]);
-
-    customLog('info', 'Actor finished.');
-});
+} 
