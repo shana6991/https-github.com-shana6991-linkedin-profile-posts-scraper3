@@ -1,10 +1,9 @@
-const Apify = require('apify');
+const { Actor } = require('apify'); // Changed from const Apify = require('apify');
 // const moment = require('moment'); // Removed
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 // const ProxyChain = require('proxy-chain'); // Removed
 // const fs = require('fs'); // Removed
-// const { Actor } = require('apify'); // Removed, Apify.main is used
 // const { PuppeteerCrawler, ProxyConfiguration } = require('crawlee'); // Removed
 
 puppeteer.use(StealthPlugin());
@@ -28,8 +27,8 @@ const humanType = async (page, selector, text) => {
     }
 };
 
-Apify.main(async () => {
-    const input = await Apify.getInput();
+Actor.main(async () => { // Changed from Apify.main
+    const input = await Actor.getInput(); // Changed from Apify.getInput
     const { 
         username,
         password,
@@ -39,7 +38,7 @@ Apify.main(async () => {
         proxyConfiguration
     } = input;
 
-    const proxyUrl = await getProxyUrl(useProxy, proxyConfiguration);
+    const proxyUrl = await getProxyUrl(useProxy, proxyConfiguration); // This will now call Actor.createProxyConfiguration
     console.log('Using proxy:', useProxy);
 
     const launchOptions = {
@@ -335,7 +334,7 @@ Apify.main(async () => {
 
         // Save the results
         console.log(`Successfully scraped ${posts.length} posts`);
-        await Apify.pushData(posts);
+        await Actor.pushData(posts); // Changed from Apify.pushData
         
     } catch (error) {
         console.error('Scraping failed:', error);
@@ -354,7 +353,7 @@ async function getProxyUrl(useProxy, proxyConfiguration) {
     
     // Use Apify Proxy if available
     if (proxyConfiguration) {
-        const proxyConfig = await Apify.createProxyConfiguration(proxyConfiguration);
+        const proxyConfig = await Actor.createProxyConfiguration(proxyConfiguration); // Changed from Apify.createProxyConfiguration
         const proxyUrl = proxyConfig.newUrl();
         console.log('Using Apify Proxy');
         return proxyUrl;
@@ -378,11 +377,11 @@ async function saveDebugData(page, identifier) {
         const safeIdentifier = identifier.replace(/[^a-zA-Z0-9_-]/g, '_');
         
         // Save HTML
-        await Apify.setValue(`DEBUG_${safeIdentifier}_${now}.html`, htmlContent, { contentType: 'text/html' });
+        await Actor.setValue(`DEBUG_${safeIdentifier}_${now}.html`, htmlContent, { contentType: 'text/html' }); // Changed from Apify.setValue
         
         // Save screenshot
         const screenshotBuffer = await page.screenshot({ fullPage: true });
-        await Apify.setValue(`DEBUG_${safeIdentifier}_${now}.png`, screenshotBuffer, { contentType: 'image/png' });
+        await Actor.setValue(`DEBUG_${safeIdentifier}_${now}.png`, screenshotBuffer, { contentType: 'image/png' }); // Changed from Apify.setValue
         
         console.log(`Debug data saved for ${identifier}`);
     } catch (error) {
