@@ -12,8 +12,6 @@ function customLog(level, message, extra) {
     if (level === 'debug' && !debugLogEnabled) {
         return;
     }
-    // If 'extra' is provided, log it. For non-debug, it will be passed to apifyLog.
-    // For debug, it will be stringified if it's an object.
     if (extra !== undefined) {
         if (level === 'debug' && typeof extra === 'object' && extra !== null) {
             apifyLog[level](`${message} ${JSON.stringify(extra)}`);
@@ -28,15 +26,21 @@ function customLog(level, message, extra) {
 // --- Proxy Testing Utility ---
 async function testAndGetWorkingProxyConfiguration(userInputProxyConfig) {
     const proxyTestAttempts = [];
+
+    // MODIFIED: More robust construction of userDefinedOptions
     if (userInputProxyConfig && userInputProxyConfig.useApifyProxy && userInputProxyConfig.apifyProxyGroups) {
+        const userDefinedOptions = {
+            groups: userInputProxyConfig.apifyProxyGroups,
+        };
+        if (userInputProxyConfig.apifyProxyCountry && userInputProxyConfig.apifyProxyCountry.trim() !== '') {
+            userDefinedOptions.countryCode = userInputProxyConfig.apifyProxyCountry.trim();
+        }
         proxyTestAttempts.push({
-            options: {
-                groups: userInputProxyConfig.apifyProxyGroups,
-                countryCode: userInputProxyConfig.apifyProxyCountry,
-            },
+            options: userDefinedOptions,
             label: 'User-defined Apify Proxy',
         });
     }
+
     proxyTestAttempts.push({
         options: { groups: ['RESIDENTIAL'] },
         label: 'Apify RESIDENTIAL (Fallback)',
@@ -47,10 +51,9 @@ async function testAndGetWorkingProxyConfiguration(userInputProxyConfig) {
     });
 
     for (const attempt of proxyTestAttempts) {
-        // MODIFICATION: Stringify attempt.options for this specific log to avoid potential schema conflict
         customLog('info', `[ProxySetup] Attempting to test proxy: ${attempt.label} with options: ${JSON.stringify(attempt.options)}`);
         let browser = null;
-        let maskedProxyUrlForLogging = 'N/A';
+        let maskedProxyUrlForLogging = 'N/A'; // Initialize here
         try {
             const tempProxyConfig = new ProxyConfiguration(attempt.options);
             const proxyUrl = await tempProxyConfig.newUrl();
@@ -143,7 +146,6 @@ Actor.main(async () => {
 
     debugLogEnabled = debugLog;
 
-    // Modified customLog usage
     if (!linkedinProfileUrl || !email || !password) {
         customLog('error', 'Missing required input: linkedinProfileUrl, email, or password.');
         await Actor.exit(1);
