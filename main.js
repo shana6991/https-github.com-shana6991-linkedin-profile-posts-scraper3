@@ -49,25 +49,7 @@ Actor.main(async () => {
 - Using proxy: ${useProxy ? 'yes' : 'no'}`);
 
     let proxyUrl = null;
-    let proxyConfig = null;
-
-    if (useProxy) {
-        try {
-            proxyConfig = await Actor.createProxyConfiguration(proxyConfiguration || {});
-            console.log('Proxy configuration created successfully');
-            
-            if (proxyConfig?.groups?.length) {
-                console.log(`Using proxy groups: ${proxyConfig.groups.join(', ')}`);
-            }
-            
-            proxyUrl = proxyConfig.newUrl();
-            console.log(`Proxy URL generated: ${proxyUrl.replace(/:[^:@]*@/, ':****@')}`);
-        } catch (error) {
-            console.warn(`Error setting up proxy: ${error.message}`);
-            console.log('Continuing without proxy');
-        }
-    }
-
+    
     // Browser launch options
     const launchOptions = {
         headless: true,
@@ -84,11 +66,59 @@ Actor.main(async () => {
         ]
     };
 
-    if (proxyUrl) {
-        launchOptions.args.push(`--proxy-server=${proxyUrl}`);
+    // Configure proxy if enabled
+    if (useProxy) {
+        try {
+            console.log('Setting up Apify proxy configuration...');
+            
+            // Create proxy configuration
+            const proxyConfig = await Actor.createProxyConfiguration(proxyConfiguration || {
+                useApifyProxy: true,
+                apifyProxyGroups: ['RESIDENTIAL']
+            });
+            
+            if (!proxyConfig) {
+                console.log('No proxy configuration was created, continuing without proxy');
+            } else {
+                // Log proxy groups if available
+                if (proxyConfig.groups && proxyConfig.groups.length > 0) {
+                    console.log(`Using proxy groups: ${proxyConfig.groups.join(', ')}`);
+                }
+                
+                // Get a proxy URL
+                try {
+                    const generatedProxyUrl = proxyConfig.newUrl();
+                    if (typeof generatedProxyUrl === 'string' && generatedProxyUrl.length > 0) {
+                        proxyUrl = generatedProxyUrl;
+                        // Mask sensitive parts of the proxy URL when logging
+                        const maskedUrl = proxyUrl.replace(/:[^:@]*@/, ':****@');
+                        console.log(`Proxy URL generated: ${maskedUrl}`);
+                        
+                        // Add proxy to launch options
+                        launchOptions.args.push(`--proxy-server=${proxyUrl}`);
+                    } else {
+                        console.log('Generated proxy URL is invalid, continuing without proxy');
+                    }
+                } catch (proxyUrlError) {
+                    console.error('Error generating proxy URL:', proxyUrlError.message);
+                    console.log('Continuing without proxy');
+                }
+            }
+        } catch (proxyError) {
+            console.error('Error setting up proxy configuration:', proxyError.message);
+            console.log('Continuing without proxy');
+        }
+    } else {
+        console.log('Proxy usage is disabled by input configuration');
     }
 
-    console.log('Launching browser');
+    console.log('Launching browser with options:', JSON.stringify({
+        ...launchOptions,
+        args: launchOptions.args.map(arg => 
+            arg.startsWith('--proxy-server=') ? '--proxy-server=****' : arg
+        )
+    }, null, 2));
+    
     const browser = await puppeteer.launch(launchOptions);
     console.log('Browser launched successfully');
     
@@ -168,13 +198,20 @@ Actor.main(async () => {
         // Save debug data
         if (page) {
             try {
-                const screenshotBuffer = await page.screenshot({ fullPage: true });
-                await Actor.setValue('ERROR_SCREENSHOT.png', screenshotBuffer, { contentType: 'image/png' });
+                // Check if page is still valid before taking screenshot
+                const pageIsClosed = await page.evaluate(() => false).catch(() => true);
                 
-                const htmlContent = await page.content();
-                await Actor.setValue('ERROR_HTML.html', htmlContent, { contentType: 'text/html' });
-                
-                console.log('Error debug data saved');
+                if (!pageIsClosed) {
+                    const screenshotBuffer = await page.screenshot({ fullPage: true });
+                    await Actor.setValue('ERROR_SCREENSHOT.png', screenshotBuffer, { contentType: 'image/png' });
+                    
+                    const htmlContent = await page.content();
+                    await Actor.setValue('ERROR_HTML.html', htmlContent, { contentType: 'text/html' });
+                    
+                    console.log('Error debug data saved');
+                } else {
+                    console.log('Could not save debug data: page is already closed');
+                }
             } catch (debugError) {
                 console.error('Failed to save debug data:', debugError.message);
             }
